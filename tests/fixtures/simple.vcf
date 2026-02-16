@@ -1,0 +1,36 @@
+BEGIN:VCARD
+VERSION:3.0
+FN:Hans Mueller
+N:Mueller;Hans;;;
+EMAIL;TYPE=HOME:hans.mueller@gmail.com
+TEL;TYPE=CELL:079 123 45 67
+END:VCARD
+BEGIN:VCARD
+VERSION:3.0
+FN:Hans Müller
+N:Müller;Hans;;;
+EMAIL;TYPE=HOME:hans.mueller@gmail.com
+EMAIL;TYPE=WORK:h.mueller@ethz.ch
+TEL;TYPE=CELL:+41791234567
+END:VCARD
+BEGIN:VCARD
+VERSION:3.0
+FN:anna@example.com
+N:;;;;
+EMAIL:anna@example.com
+END:VCARD
+BEGIN:VCARD
+VERSION:3.0
+FN:Newsletter
+N:;;;;
+EMAIL:newsletter@bigshop.com
+END:VCARD
+BEGIN:VCARD
+VERSION:3.0
+FN:Peter Meier
+N:Meier;Peter;;;
+EMAIL;TYPE=HOME:peter.meier@bluewin.ch
+TEL;TYPE=CELL:078 987 65 43
+ADR;TYPE=HOME:;;Bahnhofstrasse 1;Zürich;;8001;Switzerland
+ORG:ETH Zürich
+END:VCARD

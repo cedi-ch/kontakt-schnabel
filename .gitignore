@@ -1,0 +1,33 @@
+# Personal contact data — NEVER push to GitHub
+data/
+output/
+
+# Old alpha attempts
+input/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+dist/
+build/
+.venv/
+*.so
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code local settings
+.claude/
+
+# Project
+*.db
+*.sqlite
