@@ -266,70 +266,81 @@ def run_raw_tui(contacts: list[ParsedContact]) -> list[ParsedContact]:
         console.print("[yellow]Keine Kontakte zum Pr\u00fcfen.[/yellow]")
         return contacts
 
-    idx = 0
+    quit_requested = False
 
-    while idx < len(contacts):
-        contact = contacts[idx]
-
-        # Skip already-decided contacts when navigating
-        if contact.status != "pending":
-            idx += 1
-            continue
-
-        accepted = sum(1 for c in contacts if c.status == "accepted")
-        rejected = sum(1 for c in contacts if c.status == "rejected")
-
-        _render_contact(contact, idx, len(contacts), accepted, rejected)
-
-        key = readchar.readchar()
-
-        if key == "q":
-            console.print(
-                f"\n[yellow]Beendet. {accepted} akzeptiert, "
-                f"{rejected} verworfen.[/yellow]"
-            )
+    while not quit_requested:
+        # Count pending contacts for this pass
+        pending_ids = [i for i, c in enumerate(contacts) if c.status == "pending"]
+        if not pending_ids:
             break
 
-        elif key == "a":
-            contact.status = "accepted"
-            idx += 1
+        for idx in pending_ids:
+            contact = contacts[idx]
+            if contact.status != "pending":
+                continue
 
-        elif key == "r":
-            contact.status = "rejected"
-            idx += 1
+            accepted = sum(1 for c in contacts if c.status == "accepted")
+            rejected = sum(1 for c in contacts if c.status == "rejected")
 
-        elif key == "s":
-            idx += 1
+            _render_contact(contact, idx, len(contacts), accepted, rejected)
 
-        elif key == "e":
-            _edit_field(contact)
+            key = readchar.readchar()
 
-        elif key == "d":
-            _delete_field(contact)
+            if key == "q":
+                quit_requested = True
+                break
 
-        elif key == "w":
-            _change_type(contact)
+            elif key == "a":
+                contact.status = "accepted"
 
-        elif key == "+":
-            _add_field(contact)
+            elif key == "r":
+                contact.status = "rejected"
 
-        elif key == "?":
-            _show_help()
+            elif key == "s":
+                pass  # bleibt pending, kommt nächste Runde wieder
 
+            elif key == "e":
+                _edit_field(contact)
+
+            elif key == "d":
+                _delete_field(contact)
+
+            elif key == "w":
+                _change_type(contact)
+
+            elif key == "+":
+                _add_field(contact)
+
+            elif key == "?":
+                _show_help()
+
+        # End of pass — check if we should loop
+        if not quit_requested:
+            pending = sum(1 for c in contacts if c.status == "pending")
+            if pending == 0:
+                break
+            accepted = sum(1 for c in contacts if c.status == "accepted")
+            rejected = sum(1 for c in contacts if c.status == "rejected")
+            console.print(
+                f"\n[yellow]Durchlauf fertig. {pending} \u00fcbersprungen "
+                f"\u2014 starte n\u00e4chste Runde...[/yellow]"
+            )
+            import time
+            time.sleep(1)
+
+    # Final summary
+    accepted = sum(1 for c in contacts if c.status == "accepted")
+    rejected = sum(1 for c in contacts if c.status == "rejected")
+    pending = sum(1 for c in contacts if c.status == "pending")
+    if pending > 0:
+        console.print(
+            f"\n[yellow]Beendet. {accepted} akzeptiert, "
+            f"{rejected} verworfen, {pending} offen.[/yellow]"
+        )
     else:
-        # Reached the end — check if any pending remain
-        pending = sum(1 for c in contacts if c.status == "pending")
-        accepted = sum(1 for c in contacts if c.status == "accepted")
-        rejected = sum(1 for c in contacts if c.status == "rejected")
-        if pending > 0:
-            console.print(
-                f"\n[yellow]Durchlauf fertig. {pending} noch ausstehend \u2014 "
-                f"erneut starten f\u00fcr \u00fcbersprungene.[/yellow]"
-            )
-        else:
-            console.print(
-                f"\n[bold green]Alle Kontakte gepr\u00fcft! "
-                f"{accepted} akzeptiert, {rejected} verworfen.[/bold green]"
-            )
+        console.print(
+            f"\n[bold green]Alle Kontakte gepr\u00fcft! "
+            f"{accepted} akzeptiert, {rejected} verworfen.[/bold green]"
+        )
 
     return contacts
