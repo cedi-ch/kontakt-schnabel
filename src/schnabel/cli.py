@@ -339,6 +339,108 @@ def status(ctx):
     db.close()
 
 
+# ── Rawparse ───────────────────────────────────────────────────────────────
+
+@cli.command()
+@click.argument("input_file", type=click.Path(exists=True))
+@click.option("-o", "--output", "output_file", type=click.Path(),
+              default=str(DEFAULT_OUTPUT_DIR / "raw_parsed.vcf"),
+              help="Output VCF file path.")
+@click.option("--db-import", "db_import", is_flag=True,
+              help="Also import accepted contacts into the main database.")
+@click.option("--auto-accept", is_flag=True,
+              help="Skip TUI, auto-accept contacts where all fields have high confidence.")
+@click.pass_context
+def rawparse(ctx, input_file, output_file, db_import, auto_accept):
+    """Parse contacts from unstructured text files."""
+    from schnabel.export import contact_to_vcard
+    from schnabel.rawparse import parse_raw_file, parsed_to_contact
+
+    contacts = parse_raw_file(input_file)
+
+    if not contacts:
+        console.print("[red]Keine Kontakte im Text gefunden.[/red]")
+        return
+
+    # Summary
+    high_conf = sum(
+        1 for c in contacts
+        if all(f.confidence == "high" for f in c.fields)
+    )
+    needs_review = len(contacts) - high_conf
+    console.print(
+        f"[bold green]{len(contacts)} Kontakte geparst[/bold green] "
+        f"({high_conf} hohe Konfidenz, {needs_review} zum Prüfen)"
+    )
+
+    if auto_accept:
+        # Auto-accept contacts with fields, reject empty ones
+        for c in contacts:
+            if c.fields and all(f.confidence == "high" for f in c.fields):
+                c.status = "accepted"
+            elif not c.fields:
+                c.status = "rejected"
+            else:
+                # Accept with warning — user can review VCF afterwards
+                c.status = "accepted"
+        accepted = sum(1 for c in contacts if c.status == "accepted")
+        low_conf = sum(
+            1 for c in contacts
+            if c.status == "accepted" and not all(f.confidence == "high" for f in c.fields)
+        )
+        console.print(
+            f"[green]Auto-akzeptiert: {accepted}[/green]"
+            + (f"  [yellow](davon {low_conf} mit tiefer Konfidenz)[/yellow]" if low_conf else "")
+        )
+    else:
+        from schnabel.rawtui import run_raw_tui
+        contacts = run_raw_tui(contacts)
+
+    # Export accepted contacts
+    accepted_contacts = [c for c in contacts if c.status == "accepted"]
+    if not accepted_contacts:
+        console.print("[yellow]Keine Kontakte akzeptiert — nichts zu exportieren.[/yellow]")
+        return
+
+    output_path = Path(output_file)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    vcards = []
+    for parsed in accepted_contacts:
+        contact = parsed_to_contact(parsed)
+        vcards.append(contact_to_vcard(contact))
+
+    content = "\r\n".join(vcards)
+    if content:
+        content += "\r\n"
+    output_path.write_text(content, encoding="utf-8")
+    console.print(
+        f"[bold green]{len(accepted_contacts)} Kontakte exportiert "
+        f"→ {output_path}[/bold green]"
+    )
+
+    # Optional DB import
+    if db_import:
+        from schnabel.classify import classify_contact
+
+        db = get_db(ctx.obj["db_path"])
+        import_id = db.add_import_source(str(input_file), "rawparse", "utf-8")
+
+        for parsed in accepted_contacts:
+            contact = parsed_to_contact(parsed)
+            contact.source_file = str(input_file)
+            contact.source_import_id = import_id
+            contact.category = classify_contact(contact)
+            db.insert_contact(contact)
+
+        db.update_import_count(import_id, len(accepted_contacts))
+        db.commit()
+        console.print(
+            f"[green]{len(accepted_contacts)} Kontakte in Datenbank importiert.[/green]"
+        )
+        db.close()
+
+
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
 def _print_stats_table(stats: dict):

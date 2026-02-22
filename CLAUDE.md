@@ -16,11 +16,13 @@ https://github.com/cedi-ch/kontakt-schnabel
 
 ```
 src/schnabel/
-├── cli.py          # Click CLI: schnabel import, analyze, normalize, match, dedup, export, status, photos, undo
+├── cli.py          # Click CLI: schnabel import, analyze, normalize, match, dedup, export, status, photos, undo, rawparse
 ├── config.py       # Global config: weights, thresholds, encoding chain, spam lists
 ├── db.py           # SQLite database with similarity graph schema
 ├── model.py        # Contact/ContactField/Photo dataclasses
 ├── reader.py       # vCard parser (vobject + regex fallback) with encoding fallback
+├── rawparse.py     # Raw text parser: extract contacts from unstructured text (subtract-and-classify pipeline)
+├── rawtui.py       # Rich + readchar TUI for reviewing raw-parsed contacts
 ├── classify.py     # 3-tier classification: real / stub / spam
 ├── normalize.py    # 4-stage normalization: prune → transform → normalize → simplify
 ├── match.py        # Blocking + weighted scoring with anchor rules
@@ -42,6 +44,9 @@ schnabel export ./output/           # Export to real/stubs/spam VCF files
 schnabel photos --extract ./photos/ # Extract contact photos
 schnabel status                     # Pipeline overview
 schnabel undo <merge-id>            # Undo a merge
+schnabel rawparse FILE [-o OUT.vcf]  # Parse contacts from raw text files
+schnabel rawparse FILE --auto-accept # Skip TUI, accept all parsed contacts
+schnabel rawparse FILE --db-import   # Also import into main database
 ```
 
 ## Development
