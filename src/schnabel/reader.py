@@ -22,19 +22,32 @@ def detect_encoding(raw_bytes: bytes) -> str:
 
 
 def read_file_with_fallback(file_path: Path) -> tuple[str, str]:
-    """Read a file trying multiple encodings. Returns (text, encoding_used)."""
+    """Read a file trying multiple encodings. Returns (text, encoding_used).
+
+    Always tries UTF-8 first (since chardet often misdetects UTF-8 as MacRoman
+    or ISO-8859-1 when the file only has a few non-ASCII bytes).
+    """
     raw_bytes = file_path.read_bytes()
     if not raw_bytes:
         return "", "utf-8"
 
-    # Try chardet first
+    # Always try UTF-8 and UTF-8-sig first — they're strict and won't
+    # produce mojibake (unlike single-byte encodings that accept anything)
+    for encoding in ("utf-8", "utf-8-sig"):
+        try:
+            text = raw_bytes.decode(encoding)
+            return text, encoding
+        except (UnicodeDecodeError, UnicodeEncodeError):
+            continue
+
+    # UTF-8 failed → file has bytes invalid in UTF-8 → use chardet + fallback
     detected = detect_encoding(raw_bytes)
-    chain = [detected] + [e for e in ENCODING_CHAIN if e != detected]
+    fallbacks = [e for e in ENCODING_CHAIN if e not in ("utf-8", "utf-8-sig")]
+    chain = [detected] + [e for e in fallbacks if e != detected]
 
     for encoding in chain:
         try:
             text = raw_bytes.decode(encoding)
-            # Verify by re-encoding — catches mojibake
             text.encode("utf-8")
             return text, encoding
         except (UnicodeDecodeError, UnicodeEncodeError):
@@ -47,6 +60,35 @@ def read_file_with_fallback(file_path: Path) -> tuple[str, str]:
 def normalize_line_endings(text: str) -> str:
     """Normalize to LF for parsing (vobject handles both, but be safe)."""
     return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def fix_broken_qp(text: str) -> str:
+    r"""Fix broken Quoted-Printable remnants in vCard text.
+
+    Some vCard files contain broken QP artifacts where a previous tool
+    partially decoded QP but left behind patterns like:
+      - '=6\nC' (literal backslash+n) which should be '=6C' → 'l'
+      - '=C3=BC' which should be 'ü' (UTF-8 encoded via QP)
+
+    This fixes both the literal \n soft-break artifacts and remaining =XX sequences.
+    """
+    # Fix literal \n (backslash + n) inside QP sequences: =X\nY → =XY
+    text = re.sub(r"=([0-9A-Fa-f])\\n([0-9A-Fa-f])", r"=\1\2", text)
+
+    # Now decode any remaining =XX QP hex sequences (but not in PHOTO/binary lines)
+    def decode_qp_in_line(line: str) -> str:
+        upper = line.strip().upper()
+        if upper.startswith("PHOTO") or upper.startswith("LOGO"):
+            return line
+        if not re.search(r"=[0-9A-Fa-f]{2}", line):
+            return line
+        try:
+            import quopri
+            return quopri.decodestring(line.encode("utf-8")).decode("utf-8")
+        except Exception:
+            return line
+
+    return "\n".join(decode_qp_in_line(line) for line in text.split("\n"))
 
 
 def split_vcards(text: str) -> list[str]:
@@ -347,6 +389,7 @@ def parse_vcf_file(file_path: Path) -> tuple[list[Contact], str]:
         return [], encoding
 
     text = normalize_line_endings(text)
+    text = fix_broken_qp(text)
     vcard_texts = split_vcards(text)
 
     contacts = []

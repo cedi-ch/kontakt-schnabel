@@ -6,6 +6,7 @@ import jellyfish
 
 from schnabel.config import (
     ANCHOR_MAX_NAME_ONLY,
+    ANCHOR_MIN_SHARED_CONTACT_AND_NAME,
     ANCHOR_MIN_SHARED_EMAIL_AND_PHONE,
     ANCHOR_MIN_SHARED_EMAIL_OR_PHONE,
     WEIGHT_ADDRESS,
@@ -168,11 +169,17 @@ def score_pair(db: Database, a_id: int, b_id: int) -> dict:
 
     if has_shared_email and has_shared_phone:
         confidence = max(confidence, ANCHOR_MIN_SHARED_EMAIL_AND_PHONE)
+    elif (has_shared_email or has_shared_phone) and name_score >= 0.85:
+        confidence = max(confidence, ANCHOR_MIN_SHARED_CONTACT_AND_NAME)
     elif has_shared_email or has_shared_phone:
         confidence = max(confidence, ANCHOR_MIN_SHARED_EMAIL_OR_PHONE)
 
     if name_only:
-        confidence = min(confidence, ANCHOR_MAX_NAME_ONLY)
+        if name_score >= 0.98:
+            # Near-identical names (same person across source files) — allow auto-merge
+            confidence = max(confidence, 0.80)
+        else:
+            confidence = min(confidence, ANCHOR_MAX_NAME_ONLY)
 
     return {
         "confidence": round(confidence, 4),

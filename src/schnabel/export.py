@@ -140,20 +140,24 @@ def contact_to_vcard(contact: Contact) -> str:
     return "\r\n".join(folded)
 
 
-def export_contacts(db: Database, output_dir: Path, normalize_photos: bool = True):
-    """Export contacts to three VCF files: real, stubs, spam."""
+def export_contacts(db: Database, output_dir: Path, normalize_photos: bool = True,
+                    max_lines: int = 0):
+    """Export contacts to three VCF files: real, stubs, spam.
+
+    If max_lines > 0, splits output into numbered chunks that each stay
+    under the line limit (e.g. real_contacts_001.vcf, real_contacts_002.vcf).
+    """
     output_dir.mkdir(parents=True, exist_ok=True)
 
     categories = {
-        "real": output_dir / "real_contacts.vcf",
-        "stub": output_dir / "stubs.vcf",
-        "spam": output_dir / "spam.vcf",
+        "real": "real_contacts",
+        "stub": "stubs",
+        "spam": "spam",
     }
 
     counts = {}
-    for category, file_path in categories.items():
+    for category, basename in categories.items():
         contacts = db.get_contacts_by_category(category)
-        # Sort alphabetically by FN
         contacts.sort(key=lambda c: (c.fn or "").lower())
 
         vcards = []
@@ -162,13 +166,47 @@ def export_contacts(db: Database, output_dir: Path, normalize_photos: bool = Tru
                 _normalize_contact_photos(contact)
             vcards.append(contact_to_vcard(contact))
 
-        content = "\r\n".join(vcards)
-        if content:
-            content += "\r\n"
-        file_path.write_text(content, encoding="utf-8")
+        if max_lines > 0 and vcards:
+            _write_split(vcards, output_dir, basename, max_lines)
+        else:
+            content = "\r\n".join(vcards)
+            if content:
+                content += "\r\n"
+            (output_dir / f"{basename}.vcf").write_text(content, encoding="utf-8")
         counts[category] = len(contacts)
 
     return counts
+
+
+def _write_split(vcards: list[str], output_dir: Path, basename: str, max_lines: int):
+    """Write vCards into numbered chunk files, each under max_lines."""
+    chunk = []
+    chunk_lines = 0
+    chunk_num = 1
+
+    for vcard in vcards:
+        vcard_lines = vcard.count("\r\n") + 1
+        if chunk and (chunk_lines + vcard_lines + 1) > max_lines:
+            # Write current chunk
+            content = "\r\n".join(chunk) + "\r\n"
+            fname = f"{basename}_{chunk_num:03d}.vcf"
+            (output_dir / fname).write_text(content, encoding="utf-8")
+            chunk_num += 1
+            chunk = []
+            chunk_lines = 0
+
+        chunk.append(vcard)
+        chunk_lines += vcard_lines + 1  # +1 for separator line
+
+    # Write final chunk
+    if chunk:
+        content = "\r\n".join(chunk) + "\r\n"
+        if chunk_num == 1:
+            # Only one chunk needed — use plain name
+            fname = f"{basename}.vcf"
+        else:
+            fname = f"{basename}_{chunk_num:03d}.vcf"
+        (output_dir / fname).write_text(content, encoding="utf-8")
 
 
 def _normalize_contact_photos(contact: Contact):

@@ -250,8 +250,10 @@ def undo(ctx, merge_id):
 @click.argument("output_dir", type=click.Path(), default=str(DEFAULT_OUTPUT_DIR))
 @click.option("--normalize-photos/--preserve-photos", default=True,
               help="Normalize photos (resize, JPEG convert). Default: normalize.")
+@click.option("--max-lines", type=int, default=0,
+              help="Split output files at this line limit (e.g. 10000 for Infomaniak).")
 @click.pass_context
-def export(ctx, output_dir, normalize_photos):
+def export(ctx, output_dir, normalize_photos, max_lines):
     """Export contacts to clean vCard 3.0 files."""
     from schnabel.export import export_contacts
 
@@ -259,11 +261,16 @@ def export(ctx, output_dir, normalize_photos):
     output_path = Path(output_dir)
 
     with console.status("[bold cyan]Exporting..."):
-        counts = export_contacts(db, output_path, normalize_photos=normalize_photos)
+        counts = export_contacts(db, output_path, normalize_photos=normalize_photos,
+                                 max_lines=max_lines)
 
     console.print(f"\n[bold green]Export complete → {output_path}/[/bold green]")
     for category, count in counts.items():
         console.print(f"  {category}: {count} contacts")
+    if max_lines > 0:
+        from glob import glob
+        files = sorted(glob(str(output_path / "*.vcf")))
+        console.print(f"\n  Split into {len(files)} files (max {max_lines} lines each)")
     db.close()
 
 

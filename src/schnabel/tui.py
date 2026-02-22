@@ -157,25 +157,34 @@ def render_pair(pair: dict, contact_a, contact_b, pair_idx: int, total: int,
 
     console.print("─" * console.width)
 
-    # Action bar
-    actions = Text()
-    actions.append(" [a]", style="bold green")
-    actions.append("uto-pick ")
-    actions.append("[m]", style="bold blue")
-    actions.append("erge L→R ")
-    actions.append("[M]", style="bold blue")
-    actions.append("erge R→L ")
-    actions.append("[s]", style="bold yellow")
-    actions.append("kip ")
-    actions.append("[n]", style="bold red")
-    actions.append("ot-dup ")
-    actions.append("[d]", style="bold red")
-    actions.append("el-L ")
-    actions.append("[D]", style="bold red")
-    actions.append("el-R ")
-    actions.append("[u]", style="bold magenta")
-    actions.append("ndo")
-    console.print(actions)
+    # Action bar — two lines, no case sensitivity needed
+    line1 = Text()
+    line1.append(" a", style="bold green")
+    line1.append("=auto-merge  ")
+    line1.append("l", style="bold blue")
+    line1.append("=keep left  ")
+    line1.append("r", style="bold blue")
+    line1.append("=keep right  ")
+    line1.append("s", style="bold yellow")
+    line1.append("=skip  ")
+    line1.append("n", style="bold cyan")
+    line1.append("=not a dup")
+    console.print(line1)
+
+    line2 = Text()
+    line2.append(" 1", style="bold red")
+    line2.append("=del left  ")
+    line2.append("2", style="bold red")
+    line2.append("=del right  ")
+    line2.append("x", style="bold red")
+    line2.append("=del both  ")
+    line2.append("u", style="bold magenta")
+    line2.append("=undo  ")
+    line2.append("?", style="dim")
+    line2.append("=help  ")
+    line2.append("q", style="dim")
+    line2.append("=quit")
+    console.print(line2)
 
 
 def run_tui(db: Database, auto_merged: int = 0):
@@ -203,12 +212,14 @@ def run_tui(db: Database, auto_merged: int = 0):
 
         key = readchar.readchar()
 
+        key = key.lower()
+
         if key == "q":
             console.print("\n[yellow]Progress saved. Resume anytime with 'schnabel dedup'.[/yellow]")
             break
 
         elif key == "a":
-            # Auto-pick: merge lesser into richer
+            # Auto-merge: richer contact survives, poorer gets absorbed
             survivor_id, absorbed_id = determine_survivor(
                 db, pair["contact_a_id"], pair["contact_b_id"]
             )
@@ -219,17 +230,8 @@ def run_tui(db: Database, auto_merged: int = 0):
             db.update_pair_resolution(pair["id"], "manual_merged")
             idx += 1
 
-        elif key == "m":
-            # Merge left into right (right survives)
-            last_merge_id = merge_contacts(
-                db, pair["contact_b_id"], pair["contact_a_id"],
-                merge_type="manual", confidence=pair["confidence"],
-            )
-            db.update_pair_resolution(pair["id"], "manual_merged")
-            idx += 1
-
-        elif key == "M":
-            # Merge right into left (left survives)
+        elif key == "l":
+            # Keep left: merge right into left (left survives)
             last_merge_id = merge_contacts(
                 db, pair["contact_a_id"], pair["contact_b_id"],
                 merge_type="manual", confidence=pair["confidence"],
@@ -237,23 +239,39 @@ def run_tui(db: Database, auto_merged: int = 0):
             db.update_pair_resolution(pair["id"], "manual_merged")
             idx += 1
 
+        elif key == "r":
+            # Keep right: merge left into right (right survives)
+            last_merge_id = merge_contacts(
+                db, pair["contact_b_id"], pair["contact_a_id"],
+                merge_type="manual", confidence=pair["confidence"],
+            )
+            db.update_pair_resolution(pair["id"], "manual_merged")
+            idx += 1
+
         elif key == "s":
-            # Skip
+            # Skip for now, revisit later
             idx += 1
 
         elif key == "n":
-            # Not a duplicate
+            # Not a duplicate — never suggest this pair again
             db.update_pair_resolution(pair["id"], "not_dup")
             idx += 1
 
-        elif key == "d":
-            # Delete left
+        elif key == "1":
+            # Delete left contact
             db.delete_contact(pair["contact_a_id"])
             db.update_pair_resolution(pair["id"], "skipped")
             idx += 1
 
-        elif key == "D":
-            # Delete right
+        elif key == "2":
+            # Delete right contact
+            db.delete_contact(pair["contact_b_id"])
+            db.update_pair_resolution(pair["id"], "skipped")
+            idx += 1
+
+        elif key == "x":
+            # Delete both contacts
+            db.delete_contact(pair["contact_a_id"])
             db.delete_contact(pair["contact_b_id"])
             db.update_pair_resolution(pair["id"], "skipped")
             idx += 1
@@ -277,15 +295,16 @@ def run_tui(db: Database, auto_merged: int = 0):
             console.clear()
             console.print(Panel(
                 "[bold]Keyboard shortcuts[/bold]\n\n"
-                "[green]a[/green]  Auto-pick: merge lesser into richer\n"
-                "[blue]m[/blue]  Merge left → right (right survives)\n"
-                "[blue]M[/blue]  Merge right → left (left survives)\n"
-                "[yellow]s[/yellow]  Skip (revisit later)\n"
-                "[red]n[/red]  Not a duplicate (never suggest again)\n"
-                "[red]d[/red]  Delete left contact\n"
-                "[red]D[/red]  Delete right contact\n"
-                "[magenta]u[/magenta]  Undo last action\n"
-                "[dim]q[/dim]  Quit (progress saved)\n\n"
+                "[green]a[/green]  auto-merge: richer contact survives, fields get combined\n"
+                "[blue]l[/blue]  keep left: left survives, right gets absorbed\n"
+                "[blue]r[/blue]  keep right: right survives, left gets absorbed\n"
+                "[yellow]s[/yellow]  skip: revisit this pair later\n"
+                "[cyan]n[/cyan]  not a dup: mark as different people, never suggest again\n"
+                "[red]1[/red]  delete left contact\n"
+                "[red]2[/red]  delete right contact\n"
+                "[red]x[/red]  delete both contacts\n"
+                "[magenta]u[/magenta]  undo last action\n"
+                "[dim]q[/dim]  quit (progress saved, resume anytime)\n\n"
                 "[bold]Symbols:[/bold] ≡ identical  ≃ equivalent  ⊆/⊇ subset/superset  ≠ different\n\n"
                 "Press any key to continue...",
                 title="Help",
