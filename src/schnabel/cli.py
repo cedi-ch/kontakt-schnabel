@@ -485,6 +485,44 @@ def rawparse(ctx, input_file, output_file, db_import, auto_accept, pending):
         db.close()
 
 
+# ── Split ──────────────────────────────────────────────────────────────────
+
+@cli.command()
+@click.argument("input_file", type=click.Path(exists=True))
+@click.option("-o", "--output-dir", type=click.Path(),
+              default=str(DEFAULT_OUTPUT_DIR / "split"),
+              help="Output directory for split files.")
+@click.option("--no-rest", is_flag=True,
+              help="Don't write rest.vcf for unassigned contacts.")
+def split(input_file, output_dir, no_rest):
+    """Interactively split a VCF file into multiple named target files."""
+    from schnabel.reader import parse_vcf_file
+    from schnabel.splittui import _start_dialog, run_split_tui
+
+    input_path = Path(input_file)
+    contacts, encoding = parse_vcf_file(input_path)
+
+    if not contacts:
+        console.print(f"[red]Keine Kontakte in {input_path.name} gefunden.[/red]")
+        return
+
+    console.print(
+        f"[bold green]{len(contacts)} Kontakte geladen[/bold green] "
+        f"aus {input_path.name} (enc: {encoding})"
+    )
+
+    targets = _start_dialog()
+    if not targets:
+        console.print("[yellow]Abgebrochen.[/yellow]")
+        return
+
+    output_path = Path(output_dir)
+    written = run_split_tui(contacts, targets, output_path, write_rest=not no_rest)
+
+    if written:
+        console.print(f"\n[bold green]Dateien geschrieben \u2192 {output_path}/[/bold green]")
+
+
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
 def _print_stats_table(stats: dict):
