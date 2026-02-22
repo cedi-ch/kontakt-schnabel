@@ -207,6 +207,7 @@ class Database:
                 field_type=f["field_type"],
                 field_value=f["field_value"],
                 field_params=json.loads(f["field_params"]),
+                id=f["id"],
             ))
 
         photos = self.conn.execute(
@@ -286,6 +287,18 @@ class Database:
         self.conn.execute(
             "UPDATE contacts SET fn = ?, family_name = ?, given_name = ? WHERE id = ?",
             (fn, family_name, given_name, contact_id),
+        )
+
+    def update_contact_field(self, field_id: int, field_value: str):
+        self.conn.execute(
+            "UPDATE contact_fields SET field_value = ? WHERE id = ?",
+            (field_value, field_id),
+        )
+
+    def delete_contact_field(self, field_id: int):
+        self.conn.execute(
+            "DELETE FROM contact_fields WHERE id = ?",
+            (field_id,),
         )
 
     # -- Normalized values --

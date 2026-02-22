@@ -122,6 +122,10 @@ def contact_to_vcard(contact: Contact) -> str:
             lines.append(f"URL:{f.field_value}")
         elif f.field_type == "bday":
             lines.append(f"BDAY:{f.field_value}")
+        elif f.field_type == "nickname":
+            lines.append(f"NICKNAME:{_escape_vcard_value(f.field_value)}")
+        elif f.field_type == "role":
+            lines.append(f"ROLE:{_escape_vcard_value(f.field_value)}")
 
     # Photo
     for photo in contact.photos:

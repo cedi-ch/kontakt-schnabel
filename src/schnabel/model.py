@@ -9,6 +9,7 @@ class ContactField:
     field_type: str
     field_value: str
     field_params: dict = field(default_factory=dict)
+    id: int | None = None
 
 
 @dataclass

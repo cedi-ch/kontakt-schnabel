@@ -21,6 +21,8 @@ FIELD_TYPES = {
     "6": "url",
     "7": "note",
     "8": "bday",
+    "9": "nickname",
+    "0": "role",
 }
 
 FIELD_LABELS = {
@@ -32,6 +34,9 @@ FIELD_LABELS = {
     "url": "URL",
     "note": "NOTE",
     "bday": "BDAY",
+    "nickname": "NICKNAME",
+    "role": "ROLE",
+    "title": "TITLE",
     "unknown": "???",
 }
 
