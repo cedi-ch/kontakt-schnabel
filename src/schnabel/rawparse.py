@@ -391,9 +391,14 @@ def parse_raw_file(filepath: str) -> list[ParsedContact]:
 
 
 def save_state(contacts: list[ParsedContact], state_path: Path):
-    """Save parsed contacts with their review status to a JSON file."""
+    """Save parsed contacts with their review status to a JSON file.
+
+    Deleted contacts are filtered out (permanently removed from state).
+    """
     data = []
     for c in contacts:
+        if c.status == "deleted":
+            continue
         data.append({
             "raw_text": c.raw_text,
             "status": c.status,

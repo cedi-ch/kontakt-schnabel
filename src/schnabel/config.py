@@ -1,11 +1,26 @@
 """Global configuration and defaults."""
 
+from datetime import datetime
 from pathlib import Path
 
 # Default paths
 DEFAULT_DB_PATH = Path("schnabel.db")
 DEFAULT_DATA_DIR = Path("data/input")
 DEFAULT_OUTPUT_DIR = Path("output")
+
+
+def make_output_dir(command_name: str, base_dir: Path | None = None) -> Path:
+    """Create a timestamped output directory.
+
+    Format: output/2026-02-22_2149_command/
+    Returns the created Path.
+    """
+    base = base_dir or DEFAULT_OUTPUT_DIR
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H%M")
+    dirname = f"{timestamp}_{command_name}"
+    output_dir = base / dirname
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return output_dir
 
 # Phone number defaults
 DEFAULT_PHONE_REGION = "CH"

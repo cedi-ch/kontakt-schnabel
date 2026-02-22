@@ -84,6 +84,7 @@ def _render_contact(contact: ParsedContact, idx: int, total: int,
         "pending": "ausstehend",
         "accepted": "akzeptiert",
         "rejected": "verworfen",
+        "deleted": "gelöscht",
     }.get(contact.status, contact.status)
 
     info = Text()
@@ -121,6 +122,8 @@ def _render_contact(contact: ParsedContact, idx: int, total: int,
     line1.append("=verwerfen  ")
     line1.append("s", style="bold yellow")
     line1.append("=\u00fcberspringen  ")
+    line1.append("x", style="bold red")
+    line1.append("=l\u00f6schen  ")
     line1.append("b", style="bold cyan")
     line1.append("=zur\u00fcck")
     console.print(line1)
@@ -252,7 +255,8 @@ def _show_help():
     console.print(Panel(
         "[bold]Tastaturk\u00fcrzel[/bold]\n\n"
         "[green]a[/green]  akzeptieren: Kontakt \u00fcbernehmen, weiter\n"
-        "[red]r[/red]  verwerfen: Kontakt l\u00f6schen, weiter\n"
+        "[red]r[/red]  verwerfen: Kontakt nicht exportieren, weiter\n"
+        "[red]x[/red]  l\u00f6schen: Kontakt komplett entfernen (auch aus State)\n"
         "[yellow]s[/yellow]  \u00fcberspringen: sp\u00e4ter nochmal anschauen\n"
         "[cyan]b[/cyan]  zur\u00fcck: vorherigen Kontakt nochmal anzeigen\n"
         "[blue]e[/blue]  bearbeiten: Feldwert \u00e4ndern (bleibt beim Kontakt)\n"
@@ -326,6 +330,12 @@ def run_raw_tui(contacts: list[ParsedContact]) -> list[ParsedContact]:
                     pos += 1
                     break
 
+                elif key == "x":
+                    contact.status = "deleted"
+                    history.append(pos)
+                    pos += 1
+                    break
+
                 elif key == "b":
                     if history:
                         prev_pos = history.pop()
@@ -370,16 +380,19 @@ def run_raw_tui(contacts: list[ParsedContact]) -> list[ParsedContact]:
     # Final summary
     accepted = sum(1 for c in contacts if c.status == "accepted")
     rejected = sum(1 for c in contacts if c.status == "rejected")
+    deleted = sum(1 for c in contacts if c.status == "deleted")
     pending = sum(1 for c in contacts if c.status == "pending")
     if pending > 0:
         console.print(
             f"\n[yellow]Beendet. {accepted} akzeptiert, "
-            f"{rejected} verworfen, {pending} offen.[/yellow]"
+            f"{rejected} verworfen, {deleted} gelöscht, {pending} offen.[/yellow]"
         )
     else:
         console.print(
-            f"\n[bold green]Alle Kontakte gepr\u00fcft! "
-            f"{accepted} akzeptiert, {rejected} verworfen.[/bold green]"
+            f"\n[bold green]Alle Kontakte geprüft! "
+            f"{accepted} akzeptiert, {rejected} verworfen"
+            + (f", {deleted} gelöscht" if deleted else "")
+            + ".[/bold green]"
         )
 
     return contacts

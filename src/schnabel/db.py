@@ -94,6 +94,12 @@ CREATE INDEX IF NOT EXISTS idx_similarity_confidence ON similarity_pairs(confide
 CREATE INDEX IF NOT EXISTS idx_similarity_resolution ON similarity_pairs(resolution);
 CREATE INDEX IF NOT EXISTS idx_similarity_a ON similarity_pairs(contact_a_id);
 CREATE INDEX IF NOT EXISTS idx_similarity_b ON similarity_pairs(contact_b_id);
+
+CREATE TABLE IF NOT EXISTS metadata (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 
@@ -473,3 +479,48 @@ class Database:
             if c:
                 contacts.append(c)
         return contacts
+
+    # -- Metadata --
+
+    def set_metadata(self, key: str, value: str):
+        self.conn.execute(
+            """INSERT INTO metadata (key, value, updated_at)
+               VALUES (?, ?, CURRENT_TIMESTAMP)
+               ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = CURRENT_TIMESTAMP""",
+            (key, value, value),
+        )
+        self.conn.commit()
+
+    def get_metadata(self, key: str) -> str | None:
+        row = self.conn.execute(
+            "SELECT value FROM metadata WHERE key = ?", (key,)
+        ).fetchone()
+        return row["value"] if row else None
+
+    def get_session_stats(self) -> dict:
+        """Get session statistics: imports, merges by type, deleted contacts."""
+        stats = {}
+        row = self.conn.execute("SELECT COUNT(*) as n FROM import_sources").fetchone()
+        stats["imports"] = row["n"]
+
+        row = self.conn.execute(
+            "SELECT COUNT(*) as n FROM merge_history WHERE merge_type = 'auto'"
+        ).fetchone()
+        stats["auto_merges"] = row["n"]
+
+        row = self.conn.execute(
+            "SELECT COUNT(*) as n FROM merge_history WHERE merge_type = 'manual'"
+        ).fetchone()
+        stats["manual_merges"] = row["n"]
+
+        row = self.conn.execute(
+            "SELECT COUNT(*) as n FROM contacts WHERE category = 'deleted'"
+        ).fetchone()
+        stats["deleted"] = row["n"]
+
+        row = self.conn.execute(
+            "SELECT COUNT(*) as n FROM similarity_pairs WHERE resolution = 'pending'"
+        ).fetchone()
+        stats["pending_pairs"] = row["n"]
+
+        return stats

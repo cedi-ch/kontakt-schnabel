@@ -201,37 +201,39 @@ def render_pair(pair: dict, contact_a, contact_b, pair_idx: int, total: int,
     line1.append(" a", style="bold green")
     line1.append("=auto-merge  ")
     line1.append("l", style="bold blue")
-    line1.append("=keep left  ")
+    line1.append("=links  ")
     line1.append("r", style="bold blue")
-    line1.append("=keep right  ")
+    line1.append("=rechts  ")
     line1.append("s", style="bold yellow")
     line1.append("=skip  ")
     line1.append("n", style="bold cyan")
-    line1.append("=not a dup")
+    line1.append("=kein Dup  ")
+    line1.append("b", style="bold cyan")
+    line1.append("=zurück")
     console.print(line1)
 
     line2 = Text()
     line2.append(" 1", style="bold red")
-    line2.append("=del left  ")
+    line2.append("=del links  ")
     line2.append("2", style="bold red")
-    line2.append("=del right  ")
+    line2.append("=del rechts  ")
     line2.append("x", style="bold red")
-    line2.append("=del both  ")
+    line2.append("=del beide  ")
     line2.append("u", style="bold magenta")
     line2.append("=undo  ")
     line2.append("?", style="dim")
-    line2.append("=help  ")
+    line2.append("=hilfe  ")
     line2.append("q", style="dim")
     line2.append("=quit")
     console.print(line2)
 
     line3 = Text()
     line3.append(" e", style="bold blue")
-    line3.append("=edit  ")
+    line3.append("=bearbeiten  ")
     line3.append("d", style="bold red")
-    line3.append("=del field  ")
+    line3.append("=feld löschen  ")
     line3.append("+", style="bold green")
-    line3.append("=add field")
+    line3.append("=feld hinzufügen")
     console.print(line3)
 
 
@@ -399,7 +401,9 @@ def run_tui(db: Database, auto_merged: int = 0):
         return
 
     idx = 0
-    last_merge_id = None
+    # History stack: (pair_index, action_type, merge_id_or_None)
+    history: list[tuple[int, str, int | None]] = []
+    merge_id_stack: list[int] = []
     total = len(pairs)
 
     while idx < len(pairs):
@@ -421,7 +425,7 @@ def run_tui(db: Database, auto_merged: int = 0):
             key = key.lower()
 
             if key == "q":
-                console.print("\n[yellow]Progress saved. Resume anytime with 'schnabel dedup'.[/yellow]")
+                console.print("\n[yellow]Progress saved. Resume with 'schnabel dedup --pending'.[/yellow]")
                 stats = db.get_stats()
                 console.print(f"\n[bold]Session complete.[/bold] Active contacts: {stats['active']}, "
                               f"Merges total: {stats['merges']}")
@@ -431,50 +435,60 @@ def run_tui(db: Database, auto_merged: int = 0):
                 survivor_id, absorbed_id = determine_survivor(
                     db, pair["contact_a_id"], pair["contact_b_id"]
                 )
-                last_merge_id = merge_contacts(
+                mid = merge_contacts(
                     db, survivor_id, absorbed_id,
                     merge_type="manual", confidence=pair["confidence"],
                 )
                 db.update_pair_resolution(pair["id"], "manual_merged")
+                history.append((idx, "merge", mid))
+                merge_id_stack.append(mid)
                 idx += 1
                 break
 
             elif key == "l":
-                last_merge_id = merge_contacts(
+                mid = merge_contacts(
                     db, pair["contact_a_id"], pair["contact_b_id"],
                     merge_type="manual", confidence=pair["confidence"],
                 )
                 db.update_pair_resolution(pair["id"], "manual_merged")
+                history.append((idx, "merge", mid))
+                merge_id_stack.append(mid)
                 idx += 1
                 break
 
             elif key == "r":
-                last_merge_id = merge_contacts(
+                mid = merge_contacts(
                     db, pair["contact_b_id"], pair["contact_a_id"],
                     merge_type="manual", confidence=pair["confidence"],
                 )
                 db.update_pair_resolution(pair["id"], "manual_merged")
+                history.append((idx, "merge", mid))
+                merge_id_stack.append(mid)
                 idx += 1
                 break
 
             elif key == "s":
+                history.append((idx, "skip", None))
                 idx += 1
                 break
 
             elif key == "n":
                 db.update_pair_resolution(pair["id"], "not_dup")
+                history.append((idx, "not_dup", None))
                 idx += 1
                 break
 
             elif key == "1":
                 db.delete_contact(pair["contact_a_id"])
                 db.update_pair_resolution(pair["id"], "skipped")
+                history.append((idx, "del_left", None))
                 idx += 1
                 break
 
             elif key == "2":
                 db.delete_contact(pair["contact_b_id"])
                 db.update_pair_resolution(pair["id"], "skipped")
+                history.append((idx, "del_right", None))
                 idx += 1
                 break
 
@@ -482,16 +496,54 @@ def run_tui(db: Database, auto_merged: int = 0):
                 db.delete_contact(pair["contact_a_id"])
                 db.delete_contact(pair["contact_b_id"])
                 db.update_pair_resolution(pair["id"], "skipped")
+                history.append((idx, "del_both", None))
                 idx += 1
                 break
 
+            elif key == "b":
+                if history:
+                    prev_idx, prev_action, prev_merge_id = history.pop()
+                    # Undo the previous action
+                    prev_pair = pairs[prev_idx]
+                    if prev_action == "merge" and prev_merge_id:
+                        undo_merge(db, prev_merge_id)
+                        if merge_id_stack and merge_id_stack[-1] == prev_merge_id:
+                            merge_id_stack.pop()
+                        db.update_pair_resolution(prev_pair["id"], "pending")
+                    elif prev_action == "not_dup":
+                        db.update_pair_resolution(prev_pair["id"], "pending")
+                    elif prev_action == "del_left":
+                        db.reactivate_contact(prev_pair["contact_a_id"])
+                        db.update_pair_resolution(prev_pair["id"], "pending")
+                    elif prev_action == "del_right":
+                        db.reactivate_contact(prev_pair["contact_b_id"])
+                        db.update_pair_resolution(prev_pair["id"], "pending")
+                    elif prev_action == "del_both":
+                        db.reactivate_contact(prev_pair["contact_a_id"])
+                        db.reactivate_contact(prev_pair["contact_b_id"])
+                        db.update_pair_resolution(prev_pair["id"], "pending")
+                    elif prev_action == "skip":
+                        pass  # nothing to undo for skip
+                    db.commit()
+                    idx = prev_idx
+                else:
+                    console.print("\n  [dim]Kein vorheriges Paar.[/dim]")
+                    time.sleep(0.5)
+                break
+
             elif key == "u":
-                if last_merge_id:
-                    if undo_merge(db, last_merge_id):
+                if merge_id_stack:
+                    mid = merge_id_stack[-1]
+                    if undo_merge(db, mid):
+                        merge_id_stack.pop()
                         console.print("[magenta]Undo successful.[/magenta]")
-                        last_merge_id = None
-                        if idx > 0:
-                            idx -= 1
+                        # Also remove from history and go back
+                        if history and history[-1][2] == mid:
+                            prev_idx, _, _ = history.pop()
+                            prev_pair = pairs[prev_idx]
+                            db.update_pair_resolution(prev_pair["id"], "pending")
+                            db.commit()
+                            idx = prev_idx
                         time.sleep(0.5)
                         break
                     else:
@@ -516,23 +568,24 @@ def run_tui(db: Database, auto_merged: int = 0):
             elif key == "?":
                 console.clear()
                 console.print(Panel(
-                    "[bold]Keyboard shortcuts[/bold]\n\n"
-                    "[green]a[/green]  auto-merge: richer contact survives, fields get combined\n"
-                    "[blue]l[/blue]  keep left: left survives, right gets absorbed\n"
-                    "[blue]r[/blue]  keep right: right survives, left gets absorbed\n"
-                    "[yellow]s[/yellow]  skip: revisit this pair later\n"
-                    "[cyan]n[/cyan]  not a dup: mark as different people, never suggest again\n"
-                    "[red]1[/red]  delete left contact\n"
-                    "[red]2[/red]  delete right contact\n"
-                    "[red]x[/red]  delete both contacts\n"
-                    "[magenta]u[/magenta]  undo last action\n"
-                    "[blue]e[/blue]  edit a field on one side\n"
-                    "[red]d[/red]  delete a field on one side\n"
-                    "[green]+[/green]  add a field to one side\n"
-                    "[dim]q[/dim]  quit (progress saved, resume anytime)\n\n"
-                    "[bold]Symbols:[/bold] ≡ identical  ≃ equivalent  ⊆/⊇ subset/superset  ≠ different\n\n"
-                    "Press any key to continue...",
-                    title="Help",
+                    "[bold]Tastaturkürzel[/bold]\n\n"
+                    "[green]a[/green]  auto-merge: reicherer Kontakt überlebt, Felder kombiniert\n"
+                    "[blue]l[/blue]  links behalten: links überlebt, rechts absorbiert\n"
+                    "[blue]r[/blue]  rechts behalten: rechts überlebt, links absorbiert\n"
+                    "[yellow]s[/yellow]  überspringen: Paar später nochmal anschauen\n"
+                    "[cyan]n[/cyan]  kein Duplikat: als verschiedene Personen markieren\n"
+                    "[cyan]b[/cyan]  zurück: vorheriges Paar nochmal, Aktion rückgängig\n"
+                    "[red]1[/red]  linken Kontakt löschen\n"
+                    "[red]2[/red]  rechten Kontakt löschen\n"
+                    "[red]x[/red]  beide Kontakte löschen\n"
+                    "[magenta]u[/magenta]  undo: letzten Merge rückgängig\n"
+                    "[blue]e[/blue]  Feld bearbeiten (eine Seite wählen)\n"
+                    "[red]d[/red]  Feld löschen (eine Seite wählen)\n"
+                    "[green]+[/green]  Feld hinzufügen (eine Seite wählen)\n"
+                    "[dim]q[/dim]  beenden (Zustand gespeichert, --pending zum Fortsetzen)\n\n"
+                    "[bold]Symbole:[/bold] ≡ identisch  ≃ äquivalent  ⊆/⊇ Teilmenge  ≠ verschieden\n\n"
+                    "Beliebige Taste zum Fortfahren...",
+                    title="Hilfe",
                 ))
                 readchar.readchar()
                 # stay in inner loop → re-render

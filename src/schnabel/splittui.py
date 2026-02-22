@@ -1,5 +1,6 @@
 """TUI for splitting a VCF file into multiple named target files."""
 
+import json
 import re
 import time
 from dataclasses import dataclass, field
@@ -11,7 +12,7 @@ from rich.panel import Panel
 from rich.text import Text
 
 from schnabel.export import contact_to_vcard
-from schnabel.model import Contact, ContactField
+from schnabel.model import Contact, ContactField, Photo
 
 console = Console()
 
@@ -62,6 +63,89 @@ def _sanitize_filename(name: str) -> str:
     name = re.sub(r"[^\w\s\-]", "_", name)
     name = re.sub(r"\s+", "_", name)
     return name.strip("_") or "output"
+
+
+def _serialize_contact(contact: Contact) -> dict:
+    """Serialize a Contact to a JSON-safe dict (without photo data)."""
+    return {
+        "fn": contact.fn,
+        "family_name": contact.family_name,
+        "given_name": contact.given_name,
+        "additional_names": contact.additional_names,
+        "prefix": contact.prefix,
+        "suffix": contact.suffix,
+        "fields": [
+            {
+                "field_type": f.field_type,
+                "field_value": f.field_value,
+                "field_params": f.field_params,
+            }
+            for f in contact.fields
+        ],
+        "photos_meta": [
+            {"photo_format": p.photo_format, "width": p.width, "height": p.height}
+            for p in contact.photos
+        ],
+    }
+
+
+def _deserialize_contact(data: dict) -> Contact:
+    """Reconstruct a Contact from serialized dict (without photo data)."""
+    contact = Contact(
+        fn=data["fn"],
+        family_name=data["family_name"],
+        given_name=data["given_name"],
+        additional_names=data.get("additional_names", ""),
+        prefix=data.get("prefix", ""),
+        suffix=data.get("suffix", ""),
+        fields=[
+            ContactField(
+                field_type=f["field_type"],
+                field_value=f["field_value"],
+                field_params=f.get("field_params", {}),
+            )
+            for f in data["fields"]
+        ],
+        photos=[
+            Photo(photo_data=b"", photo_format=p["photo_format"],
+                  width=p["width"], height=p["height"])
+            for p in data.get("photos_meta", [])
+        ],
+    )
+    return contact
+
+
+def save_split_state(contacts: list[Contact], targets: list[SplitTarget],
+                     assignments: dict[int, int], deleted: set[int],
+                     input_file: str, state_path: Path):
+    """Save split session state to a JSON file."""
+    data = {
+        "input_file": input_file,
+        "targets": [{"name": t.name, "key": t.key} for t in targets],
+        "assignments": {str(k): v for k, v in assignments.items()},
+        "deleted": sorted(deleted),
+        "contacts": [_serialize_contact(c) for c in contacts],
+    }
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def load_split_state(state_path: Path) -> dict | None:
+    """Load saved split state. Returns dict with contacts/targets/assignments/deleted or None."""
+    if not state_path.exists():
+        return None
+    data = json.loads(state_path.read_text(encoding="utf-8"))
+    contacts = [_deserialize_contact(c) for c in data["contacts"]]
+    targets = [SplitTarget(name=t["name"], key=t["key"]) for t in data["targets"]]
+    assignments = {int(k): v for k, v in data["assignments"].items()}
+    deleted = set(data["deleted"])
+    return {
+        "input_file": data["input_file"],
+        "contacts": contacts,
+        "targets": targets,
+        "assignments": assignments,
+        "deleted": deleted,
+    }
 
 
 def _start_dialog() -> list[SplitTarget] | None:
@@ -341,7 +425,7 @@ def _show_help(num_targets: int):
         "[green]+[/green]  feld hinzuf\u00fcgen: neues Feld eingeben (bleibt beim Kontakt)\n"
         "[red]x[/red]  kontakt l\u00f6schen: ganzen Kontakt entfernen, weiter\n"
         "[dim]?[/dim]  diese Hilfe\n"
-        "[dim]q[/dim]  beenden (zugewiesene Kontakte werden geschrieben)\n\n"
+        "[dim]q[/dim]  beenden (Zustand wird gespeichert, --pending zum Fortsetzen)\n\n"
         "Beliebige Taste zum Fortfahren...",
         title="Hilfe",
     ))
@@ -402,25 +486,42 @@ def write_split_files(contacts: list[Contact], targets: list[SplitTarget],
 
 # -- Main TUI loop --
 
+@dataclass
+class SplitResult:
+    """Result of run_split_tui: either pending (quit early) or finished."""
+    contacts: list[Contact]
+    targets: list[SplitTarget]
+    assignments: dict[int, int]
+    deleted: set[int]
+    pending: bool  # True if user quit with unprocessed contacts
+
+
 def run_split_tui(contacts: list[Contact], targets: list[SplitTarget],
-                  output_dir: Path, write_rest: bool = True) -> dict[str, int]:
+                  output_dir: Path, write_rest: bool = True,
+                  initial_assignments: dict[int, int] | None = None,
+                  initial_deleted: set[int] | None = None) -> SplitResult:
     """Run the interactive split TUI.
 
-    Returns dict of filename -> count written.
+    Returns SplitResult with state and pending flag.
     """
     if not contacts:
         console.print("[yellow]Keine Kontakte zum Aufteilen.[/yellow]")
-        return {}
+        return SplitResult(contacts, targets, {}, set(), pending=False)
 
     # assignments: contact_index -> target_index
-    assignments: dict[int, int] = {}
+    assignments: dict[int, int] = dict(initial_assignments) if initial_assignments else {}
     # deleted contact indices
-    deleted: set[int] = set()
+    deleted: set[int] = set(initial_deleted) if initial_deleted else set()
     # history for undo: list of (action, contact_index, extra)
     # action: "assign" (extra=target_idx), "skip" (extra=None), "delete" (extra=None)
     history: list[tuple[str, int, int | None]] = []
 
+    # Find first unprocessed contact
     idx = 0
+    for i in range(len(contacts)):
+        if i not in assignments and i not in deleted:
+            idx = i
+            break
 
     while idx < len(contacts):
         # Skip deleted contacts
@@ -511,18 +612,16 @@ def run_split_tui(contacts: list[Contact], targets: list[SplitTarget],
         if key == "q":
             break
 
-    # Write output files
-    written = write_split_files(contacts, targets, assignments, output_dir,
-                                write_rest=write_rest, deleted=deleted)
+    # Check if there are unprocessed contacts
+    has_pending = any(
+        i not in assignments and i not in deleted
+        for i in range(len(contacts))
+    )
 
-    # Summary
-    if deleted:
-        console.print(f"[red]{len(deleted)} Kontakte gel\u00f6scht.[/red]")
-    console.print(f"\n[bold green]Aufgeteilt:[/bold green]")
-    for filename, count in written.items():
-        console.print(f"  {filename}: {count} Kontakte")
-
-    if not written:
-        console.print("  [dim](keine Kontakte zugewiesen)[/dim]")
-
-    return written
+    return SplitResult(
+        contacts=contacts,
+        targets=targets,
+        assignments=assignments,
+        deleted=deleted,
+        pending=has_pending,
+    )
