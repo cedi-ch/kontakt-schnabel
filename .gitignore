@@ -31,3 +31,4 @@ Thumbs.db
 # Project
 *.db
 *.sqlite
+.rawparse_state.json

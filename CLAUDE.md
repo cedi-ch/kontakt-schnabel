@@ -46,6 +46,7 @@ schnabel status                     # Pipeline overview
 schnabel undo <merge-id>            # Undo a merge
 schnabel rawparse FILE [-o OUT.vcf]  # Parse contacts from raw text files
 schnabel rawparse FILE --auto-accept # Skip TUI, accept all parsed contacts
+schnabel rawparse --pending          # Resume: only skipped contacts
 schnabel rawparse FILE --db-import   # Also import into main database
 ```
 

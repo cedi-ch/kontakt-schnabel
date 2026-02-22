@@ -5,8 +5,10 @@ from the remaining text before the next extraction step, so nothing gets
 double-matched.
 """
 
+import json
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import phonenumbers
 
@@ -386,6 +388,51 @@ def parse_raw_file(filepath: str) -> list[ParsedContact]:
     with open(filepath, encoding="latin-1") as f:
         text = f.read()
     return parse_raw_text(text)
+
+
+def save_state(contacts: list[ParsedContact], state_path: Path):
+    """Save parsed contacts with their review status to a JSON file."""
+    data = []
+    for c in contacts:
+        data.append({
+            "raw_text": c.raw_text,
+            "status": c.status,
+            "fields": [
+                {
+                    "field_type": f.field_type,
+                    "value": f.value,
+                    "confidence": f.confidence,
+                    "original_fragment": f.original_fragment,
+                }
+                for f in c.fields
+            ],
+        })
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def load_state(state_path: Path) -> list[ParsedContact] | None:
+    """Load saved review state. Returns None if no state file exists."""
+    if not state_path.exists():
+        return None
+    data = json.loads(state_path.read_text(encoding="utf-8"))
+    contacts = []
+    for entry in data:
+        fields = [
+            ParsedField(
+                field_type=f["field_type"],
+                value=f["value"],
+                confidence=f["confidence"],
+                original_fragment=f["original_fragment"],
+            )
+            for f in entry["fields"]
+        ]
+        contacts.append(ParsedContact(
+            raw_text=entry["raw_text"],
+            fields=fields,
+            status=entry["status"],
+        ))
+    return contacts
 
 
 def parsed_to_contact(parsed: ParsedContact) -> Contact:

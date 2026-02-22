@@ -342,7 +342,7 @@ def status(ctx):
 # ── Rawparse ───────────────────────────────────────────────────────────────
 
 @cli.command()
-@click.argument("input_file", type=click.Path(exists=True))
+@click.argument("input_file", type=click.Path(exists=True), required=False)
 @click.option("-o", "--output", "output_file", type=click.Path(),
               default=str(DEFAULT_OUTPUT_DIR / "raw_parsed.vcf"),
               help="Output VCF file path.")
@@ -350,38 +350,71 @@ def status(ctx):
               help="Also import accepted contacts into the main database.")
 @click.option("--auto-accept", is_flag=True,
               help="Skip TUI, auto-accept contacts where all fields have high confidence.")
+@click.option("--pending", is_flag=True,
+              help="Resume: only show previously skipped contacts.")
 @click.pass_context
-def rawparse(ctx, input_file, output_file, db_import, auto_accept):
-    """Parse contacts from unstructured text files."""
+def rawparse(ctx, input_file, output_file, db_import, auto_accept, pending):
+    """Parse contacts from unstructured text files.
+
+    Run with INPUT_FILE to parse a new file. Run with --pending to resume
+    review of previously skipped contacts.
+    """
     from schnabel.export import contact_to_vcard
-    from schnabel.rawparse import parse_raw_file, parsed_to_contact
+    from schnabel.rawparse import load_state, parse_raw_file, parsed_to_contact, save_state
 
-    contacts = parse_raw_file(input_file)
+    output_path = Path(output_file)
+    state_path = output_path.parent / ".rawparse_state.json"
 
-    if not contacts:
-        console.print("[red]Keine Kontakte im Text gefunden.[/red]")
-        return
+    if pending:
+        # Resume from saved state
+        contacts = load_state(state_path)
+        if not contacts:
+            console.print("[yellow]Kein gespeicherter Zustand gefunden.[/yellow]")
+            return
+        pending_count = sum(1 for c in contacts if c.status == "pending")
+        if pending_count == 0:
+            console.print("[green]Keine offenen Kontakte — alles erledigt.[/green]")
+            state_path.unlink(missing_ok=True)
+            return
+        accepted_count = sum(1 for c in contacts if c.status == "accepted")
+        console.print(
+            f"[bold cyan]Gespeicherter Zustand geladen:[/bold cyan] "
+            f"{len(contacts)} Kontakte ({pending_count} offen, "
+            f"{accepted_count} bereits akzeptiert)"
+        )
+    else:
+        # Parse new file
+        if not input_file:
+            console.print("[red]INPUT_FILE nötig (oder --pending zum Fortsetzen).[/red]")
+            return
 
-    # Summary
-    high_conf = sum(
-        1 for c in contacts
-        if all(f.confidence == "high" for f in c.fields)
-    )
-    needs_review = len(contacts) - high_conf
-    console.print(
-        f"[bold green]{len(contacts)} Kontakte geparst[/bold green] "
-        f"({high_conf} hohe Konfidenz, {needs_review} zum Prüfen)"
-    )
+        contacts = parse_raw_file(input_file)
+
+        if not contacts:
+            console.print("[red]Keine Kontakte im Text gefunden.[/red]")
+            return
+
+        # Summary
+        high_conf = sum(
+            1 for c in contacts
+            if all(f.confidence == "high" for f in c.fields)
+        )
+        needs_review = len(contacts) - high_conf
+        console.print(
+            f"[bold green]{len(contacts)} Kontakte geparst[/bold green] "
+            f"({high_conf} hohe Konfidenz, {needs_review} zum Prüfen)"
+        )
 
     if auto_accept:
         # Auto-accept contacts with fields, reject empty ones
         for c in contacts:
+            if c.status != "pending":
+                continue
             if c.fields and all(f.confidence == "high" for f in c.fields):
                 c.status = "accepted"
             elif not c.fields:
                 c.status = "rejected"
             else:
-                # Accept with warning — user can review VCF afterwards
                 c.status = "accepted"
         accepted = sum(1 for c in contacts if c.status == "accepted")
         low_conf = sum(
@@ -396,13 +429,23 @@ def rawparse(ctx, input_file, output_file, db_import, auto_accept):
         from schnabel.rawtui import run_raw_tui
         contacts = run_raw_tui(contacts)
 
+    # Save state (so pending contacts survive quit)
+    pending_count = sum(1 for c in contacts if c.status == "pending")
+    if pending_count > 0:
+        save_state(contacts, state_path)
+        console.print(
+            f"[yellow]{pending_count} Kontakte offen — "
+            f"mit 'schnabel rawparse --pending' fortsetzen.[/yellow]"
+        )
+    else:
+        state_path.unlink(missing_ok=True)
+
     # Export accepted contacts
     accepted_contacts = [c for c in contacts if c.status == "accepted"]
     if not accepted_contacts:
         console.print("[yellow]Keine Kontakte akzeptiert — nichts zu exportieren.[/yellow]")
         return
 
-    output_path = Path(output_file)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     vcards = []
@@ -423,12 +466,13 @@ def rawparse(ctx, input_file, output_file, db_import, auto_accept):
     if db_import:
         from schnabel.classify import classify_contact
 
+        source = input_file or "rawparse-pending"
         db = get_db(ctx.obj["db_path"])
-        import_id = db.add_import_source(str(input_file), "rawparse", "utf-8")
+        import_id = db.add_import_source(source, "rawparse", "utf-8")
 
         for parsed in accepted_contacts:
             contact = parsed_to_contact(parsed)
-            contact.source_file = str(input_file)
+            contact.source_file = source
             contact.source_import_id = import_id
             contact.category = classify_contact(contact)
             db.insert_contact(contact)
