@@ -203,11 +203,16 @@ def _render_contact(contact: Contact, idx: int, total: int,
     line2.append("=feld l\u00f6schen  ")
     line2.append("+", style="bold green")
     line2.append("=feld hinzuf\u00fcgen  ")
-    line2.append("?", style="dim")
-    line2.append("=hilfe  ")
-    line2.append("q", style="dim")
-    line2.append("=quit")
+    line2.append("x", style="bold red")
+    line2.append("=kontakt l\u00f6schen")
     console.print(line2)
+
+    line3 = Text()
+    line3.append(" ?", style="dim")
+    line3.append("=hilfe  ")
+    line3.append("q", style="dim")
+    line3.append("=quit")
+    console.print(line3)
 
 
 # -- Inline editing helpers (in-memory, no DB) --
@@ -330,10 +335,11 @@ def _show_help(num_targets: int):
         f"[green]{keys_str}[/green]  Kontakt einer Zieldatei zuweisen, weiter\n"
         "[yellow]s[/yellow]  \u00fcberspringen: sp\u00e4ter nochmal anschauen\n"
         "[cyan]b[/cyan]  zur\u00fcck: vorherigen Kontakt nochmal anzeigen\n"
-        "[magenta]u[/magenta]  r\u00fcckg\u00e4ngig: letzte Zuweisung zur\u00fccknehmen\n"
+        "[magenta]u[/magenta]  r\u00fcckg\u00e4ngig: letzte Aktion zur\u00fccknehmen\n"
         "[blue]e[/blue]  bearbeiten: Feldwert \u00e4ndern (bleibt beim Kontakt)\n"
         "[red]d[/red]  feld l\u00f6schen: ein Feld entfernen (bleibt beim Kontakt)\n"
         "[green]+[/green]  feld hinzuf\u00fcgen: neues Feld eingeben (bleibt beim Kontakt)\n"
+        "[red]x[/red]  kontakt l\u00f6schen: ganzen Kontakt entfernen, weiter\n"
         "[dim]?[/dim]  diese Hilfe\n"
         "[dim]q[/dim]  beenden (zugewiesene Kontakte werden geschrieben)\n\n"
         "Beliebige Taste zum Fortfahren...",
@@ -346,11 +352,13 @@ def _show_help(num_targets: int):
 
 def write_split_files(contacts: list[Contact], targets: list[SplitTarget],
                       assignments: dict[int, int], output_dir: Path,
-                      write_rest: bool = True) -> dict[str, int]:
+                      write_rest: bool = True,
+                      deleted: set[int] | None = None) -> dict[str, int]:
     """Write assigned contacts into target VCF files.
 
     Returns dict of filename -> count.
     """
+    deleted = deleted or set()
     output_dir.mkdir(parents=True, exist_ok=True)
     written = {}
 
@@ -373,11 +381,12 @@ def write_split_files(contacts: list[Contact], targets: list[SplitTarget],
         (output_dir / filename).write_text(content, encoding="utf-8")
         written[filename] = len(target_contacts)
 
-    # Rest file for unassigned contacts
+    # Rest file for unassigned (and not deleted) contacts
     if write_rest:
         assigned_indices = set(assignments.keys())
         rest_contacts = [
-            c for i, c in enumerate(contacts) if i not in assigned_indices
+            c for i, c in enumerate(contacts)
+            if i not in assigned_indices and i not in deleted
         ]
         if rest_contacts:
             rest_contacts.sort(key=lambda c: (c.fn or "").lower())
@@ -405,24 +414,26 @@ def run_split_tui(contacts: list[Contact], targets: list[SplitTarget],
 
     # assignments: contact_index -> target_index
     assignments: dict[int, int] = {}
-    # history for undo: list of (contact_index, target_index_or_None)
-    # None means it was a skip (no assignment to undo)
-    history: list[tuple[int, int | None]] = []
+    # deleted contact indices
+    deleted: set[int] = set()
+    # history for undo: list of (action, contact_index, extra)
+    # action: "assign" (extra=target_idx), "skip" (extra=None), "delete" (extra=None)
+    history: list[tuple[str, int, int | None]] = []
 
     idx = 0
 
     while idx < len(contacts):
+        # Skip deleted contacts
+        if idx in deleted:
+            idx += 1
+            continue
+
         contact = contacts[idx]
 
         # Inner loop: stay on this contact until navigation
         while True:
-            assigned = len(assignments)
-            skipped = idx - assigned - sum(
-                1 for ci in range(idx) if ci in assignments
-            )
-            # More accurate: count contacts before current that are not assigned
             visited_not_assigned = sum(
-                1 for h_ci, h_ti in history if h_ti is None
+                1 for act, _, _ in history if act == "skip"
             )
 
             _render_contact(contact, idx, len(contacts),
@@ -437,23 +448,33 @@ def run_split_tui(contacts: list[Contact], targets: list[SplitTarget],
             elif key in [str(i + 1) for i in range(len(targets))]:
                 target_idx = int(key) - 1
                 assignments[idx] = target_idx
-                history.append((idx, target_idx))
+                history.append(("assign", idx, target_idx))
                 idx += 1
                 break
 
             elif key == "s":
                 # Remove any previous assignment for this contact
                 assignments.pop(idx, None)
-                history.append((idx, None))
+                history.append(("skip", idx, None))
+                idx += 1
+                break
+
+            elif key == "x":
+                assignments.pop(idx, None)
+                deleted.add(idx)
+                history.append(("delete", idx, None))
+                console.print(f"\n  [red]Kontakt gel\u00f6scht.[/red]")
+                time.sleep(0.5)
                 idx += 1
                 break
 
             elif key == "b":
                 if history:
-                    prev_ci, prev_ti = history.pop()
-                    # Undo previous assignment
-                    if prev_ti is not None:
+                    act, prev_ci, prev_extra = history.pop()
+                    if act == "assign":
                         assignments.pop(prev_ci, None)
+                    elif act == "delete":
+                        deleted.discard(prev_ci)
                     idx = prev_ci
                 else:
                     console.print("\n  [dim]Kein vorheriger Kontakt.[/dim]")
@@ -462,9 +483,11 @@ def run_split_tui(contacts: list[Contact], targets: list[SplitTarget],
 
             elif key == "u":
                 if history:
-                    prev_ci, prev_ti = history.pop()
-                    if prev_ti is not None:
+                    act, prev_ci, prev_extra = history.pop()
+                    if act == "assign":
                         assignments.pop(prev_ci, None)
+                    elif act == "delete":
+                        deleted.discard(prev_ci)
                     idx = prev_ci
                     break
                 else:
@@ -490,9 +513,11 @@ def run_split_tui(contacts: list[Contact], targets: list[SplitTarget],
 
     # Write output files
     written = write_split_files(contacts, targets, assignments, output_dir,
-                                write_rest=write_rest)
+                                write_rest=write_rest, deleted=deleted)
 
     # Summary
+    if deleted:
+        console.print(f"[red]{len(deleted)} Kontakte gel\u00f6scht.[/red]")
     console.print(f"\n[bold green]Aufgeteilt:[/bold green]")
     for filename, count in written.items():
         console.print(f"  {filename}: {count} Kontakte")
