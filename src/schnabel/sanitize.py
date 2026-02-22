@@ -1,7 +1,8 @@
-"""Within-contact field cleanup: dedup phones, emails, addresses, URLs, text fields."""
+"""Within-contact field cleanup: dedup phones, emails, addresses, URLs, text fields, BDAY."""
 
 import re
 from dataclasses import dataclass, field
+from datetime import datetime
 from urllib.parse import urlparse, urlunparse
 
 import phonenumbers
@@ -18,8 +19,9 @@ class SanitizeReport:
         "empty": 0, "tel": 0, "email": 0, "adr": 0, "url": 0, "text": 0,
     })
     reformatted: dict[str, int] = field(default_factory=lambda: {
-        "tel": 0, "adr": 0, "url": 0,
+        "tel": 0, "adr": 0, "url": 0, "bday": 0,
     })
+    ambiguous_bdays: list = field(default_factory=list)  # list[BdayAmbiguous]
 
     @property
     def total_removed(self) -> int:
@@ -105,6 +107,186 @@ def _best_phone_format(phones: list[tuple[int, str]], e164: str) -> tuple[int, s
         if len(val) > len(best[1]):
             best = (fid, val)
     return best
+
+
+@dataclass
+class BdayAmbiguous:
+    """A BDAY field that could not be auto-resolved."""
+    contact_id: int
+    contact_fn: str
+    field_id: int
+    raw_value: str
+    option_a: str  # e.g. "1985-04-03" (DD.MM interpretation)
+    option_b: str  # e.g. "1985-03-04" (MM.DD interpretation)
+    label_a: str   # e.g. "3. April 1985"
+    label_b: str   # e.g. "4. März 1985"
+
+
+# Month names for display
+_MONTH_NAMES_DE = {
+    1: "Januar", 2: "Februar", 3: "März", 4: "April",
+    5: "Mai", 6: "Juni", 7: "Juli", 8: "August",
+    9: "September", 10: "Oktober", 11: "November", 12: "Dezember",
+}
+
+
+def _parse_bday(raw: str) -> str | BdayAmbiguous | None:
+    """Try to normalize a BDAY value to ISO 8601 (YYYY-MM-DD or --MM-DD).
+
+    Returns:
+      - str: normalized date (auto-resolved)
+      - BdayAmbiguous: needs user decision (returned with placeholder contact info)
+      - None: unparseable / already clean
+    """
+    val = raw.strip()
+    if not val:
+        return None
+
+    # Already ISO 8601: YYYY-MM-DD
+    m = re.match(r"^(\d{4})-(\d{2})-(\d{2})$", val)
+    if m:
+        return None  # already clean
+
+    # Partial date: --MM-DD (vCard format, already clean)
+    m = re.match(r"^--(\d{2})-(\d{2})$", val)
+    if m:
+        return None  # already clean
+
+    # Compact ISO: YYYYMMDD
+    m = re.match(r"^(\d{4})(\d{2})(\d{2})$", val)
+    if m:
+        y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if _valid_date(y, mo, d):
+            return f"{y:04d}-{mo:02d}-{d:02d}"
+
+    # DateTime: YYYY-MM-DDT... (strip time portion)
+    m = re.match(r"^(\d{4})-(\d{2})-(\d{2})T", val)
+    if m:
+        y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if _valid_date(y, mo, d):
+            return f"{y:04d}-{mo:02d}-{d:02d}"
+
+    # DD.MM.YYYY or DD.MM.YY (Swiss/German) — unambiguous when day > 12
+    m = re.match(r"^(\d{1,2})\.(\d{1,2})\.(\d{2,4})$", val)
+    if m:
+        a, b, y_raw = int(m.group(1)), int(m.group(2)), m.group(3)
+        y = _expand_year(y_raw)
+        if a > 12 and b <= 12 and _valid_date(y, b, a):
+            return f"{y:04d}-{b:02d}-{a:02d}"
+        if b > 12 and a <= 12 and _valid_date(y, a, b):
+            # Unusual: MM.DD.YYYY
+            return f"{y:04d}-{a:02d}-{b:02d}"
+        if a <= 12 and b <= 12 and _valid_date(y, b, a):
+            # Ambiguous but we assume DD.MM for Swiss locale
+            return f"{y:04d}-{b:02d}-{a:02d}"
+        return None  # invalid
+
+    # DD.MM (no year, Swiss format)
+    m = re.match(r"^(\d{1,2})\.(\d{1,2})\.?$", val)
+    if m:
+        a, b = int(m.group(1)), int(m.group(2))
+        if a > 12 and b <= 12:
+            return f"--{b:02d}-{a:02d}"
+        if b > 12 and a <= 12:
+            return f"--{a:02d}-{b:02d}"
+        if a <= 12 and b <= 12 and 1 <= a <= 31 and 1 <= b <= 12:
+            return f"--{b:02d}-{a:02d}"  # assume DD.MM
+        return None
+
+    # MM/DD/YYYY or DD/MM/YYYY (slash-separated) — ambiguous!
+    m = re.match(r"^(\d{1,2})[/\-](\d{1,2})[/\-](\d{2,4})$", val)
+    if m:
+        a, b, y_raw = int(m.group(1)), int(m.group(2)), m.group(3)
+        y = _expand_year(y_raw)
+
+        # Unambiguous cases
+        if a > 12 and b <= 12 and _valid_date(y, b, a):
+            # a must be day: DD/MM/YYYY
+            return f"{y:04d}-{b:02d}-{a:02d}"
+        if b > 12 and a <= 12 and _valid_date(y, a, b):
+            # b must be day: MM/DD/YYYY
+            return f"{y:04d}-{a:02d}-{b:02d}"
+
+        # Both ≤ 12 → ambiguous
+        if a <= 12 and b <= 12:
+            # Option A: DD/MM (European)
+            iso_a = f"{y:04d}-{b:02d}-{a:02d}" if _valid_date(y, b, a) else None
+            # Option B: MM/DD (US)
+            iso_b = f"{y:04d}-{a:02d}-{b:02d}" if _valid_date(y, a, b) else None
+
+            if iso_a and iso_b and iso_a != iso_b:
+                label_a = f"{a}. {_MONTH_NAMES_DE.get(b, '?')} {y}"
+                label_b = f"{b}. {_MONTH_NAMES_DE.get(a, '?')} {y}"
+                return BdayAmbiguous(
+                    contact_id=0, contact_fn="", field_id=0,
+                    raw_value=val,
+                    option_a=iso_a, option_b=iso_b,
+                    label_a=label_a, label_b=label_b,
+                )
+            if iso_a:
+                return iso_a
+            if iso_b:
+                return iso_b
+        return None
+
+    # Text month formats: "March 15, 1985" / "15. März 1985" / "15 Mar 1985"
+    text_result = _parse_text_date(val)
+    if text_result:
+        return text_result
+
+    return None  # unparseable, leave as-is
+
+
+def _expand_year(y_raw: str) -> int:
+    """Expand 2-digit year: >30 → 19xx, ≤30 → 20xx."""
+    if len(y_raw) == 2:
+        yy = int(y_raw)
+        return 1900 + yy if yy > 30 else 2000 + yy
+    return int(y_raw)
+
+
+def _valid_date(year: int, month: int, day: int) -> bool:
+    """Check if a date is valid."""
+    try:
+        datetime(year, month, day)
+        return True
+    except ValueError:
+        return False
+
+
+_TEXT_MONTHS = {
+    # English
+    "january": 1, "february": 2, "march": 3, "april": 4,
+    "may": 5, "june": 6, "july": 7, "august": 8,
+    "september": 9, "october": 10, "november": 11, "december": 12,
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4,
+    "jun": 6, "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+    # German
+    "januar": 1, "februar": 2, "märz": 3, "mai": 5,
+    "juni": 6, "juli": 7, "oktober": 10, "dezember": 12,
+    "mär": 3, "okt": 10, "dez": 12,
+}
+
+
+def _parse_text_date(val: str) -> str | None:
+    """Try to parse text date formats like 'March 15, 1985' or '15. März 1985'."""
+    # "15. März 1985" / "15 March 1985"
+    m = re.match(r"(\d{1,2})\.?\s+(\w+)\s+(\d{4})", val)
+    if m:
+        day, month_str, year = int(m.group(1)), m.group(2).lower().rstrip("."), int(m.group(3))
+        month = _TEXT_MONTHS.get(month_str)
+        if month and _valid_date(year, month, day):
+            return f"{year:04d}-{month:02d}-{day:02d}"
+
+    # "March 15, 1985" / "Mar 15 1985"
+    m = re.match(r"(\w+)\s+(\d{1,2}),?\s+(\d{4})", val)
+    if m:
+        month_str, day, year = m.group(1).lower().rstrip("."), int(m.group(2)), int(m.group(3))
+        month = _TEXT_MONTHS.get(month_str)
+        if month and _valid_date(year, month, day):
+            return f"{year:04d}-{month:02d}-{day:02d}"
+
+    return None
 
 
 def sanitize_contacts(db: Database, progress_callback=None) -> SanitizeReport:
@@ -228,6 +410,21 @@ def sanitize_contacts(db: Database, progress_callback=None) -> SanitizeReport:
                         report.removed["text"] += 1
                     else:
                         seen_text[key] = fid
+
+        # Step 7: BDAY normalize
+        bday_fields = [(f.id, f.field_value) for f in contact.fields if f.field_type == "bday"]
+        for fid, val in bday_fields:
+            result = _parse_bday(val)
+            if result is None:
+                continue  # already clean or unparseable
+            if isinstance(result, str):
+                db.update_contact_field(fid, result)
+                report.reformatted["bday"] += 1
+            elif isinstance(result, BdayAmbiguous):
+                result.contact_id = cid
+                result.contact_fn = contact.fn
+                result.field_id = fid
+                report.ambiguous_bdays.append(result)
 
         db.commit()
 

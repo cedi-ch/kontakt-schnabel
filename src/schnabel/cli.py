@@ -175,6 +175,51 @@ def sanitize(ctx):
 
         report = sanitize_contacts(db, progress_callback=progress)
 
+    # Handle ambiguous BDAYs with mini-TUI
+    resolved_bdays = 0
+    if report.ambiguous_bdays:
+        import readchar
+        from rich.text import Text
+
+        console.print(f"\n[bold yellow]{len(report.ambiguous_bdays)} mehrdeutige "
+                      f"Geburtstage gefunden:[/bold yellow]\n")
+
+        for amb in report.ambiguous_bdays:
+            line = Text()
+            line.append(f"  {amb.contact_fn}", style="bold")
+            line.append(f"  (Roh: {amb.raw_value})", style="dim")
+            console.print(line)
+
+            opt = Text()
+            opt.append("  [1] ", style="bold green")
+            opt.append(amb.label_a)
+            opt.append("  [2] ", style="bold blue")
+            opt.append(amb.label_b)
+            opt.append("  [s] ", style="bold yellow")
+            opt.append("überspringen")
+            console.print(opt)
+
+            console.print("  Wahl: ", end="")
+            key = readchar.readchar()
+            console.print(key)
+
+            if key == "1":
+                db.update_contact_field(amb.field_id, amb.option_a)
+                report.reformatted["bday"] += 1
+                resolved_bdays += 1
+                console.print(f"  [green]→ {amb.option_a}[/green]")
+            elif key == "2":
+                db.update_contact_field(amb.field_id, amb.option_b)
+                report.reformatted["bday"] += 1
+                resolved_bdays += 1
+                console.print(f"  [green]→ {amb.option_b}[/green]")
+            else:
+                console.print("  [dim]übersprungen[/dim]")
+            console.print()
+
+        if resolved_bdays:
+            db.commit()
+
     # Show report as Rich table
     from rich.table import Table
     table = Table(title="Sanitize Report", show_header=True, border_style="cyan")
@@ -182,7 +227,7 @@ def sanitize(ctx):
     table.add_column("Removed", justify="right", style="red")
     table.add_column("Reformatted", justify="right", style="yellow")
 
-    for key in ("empty", "tel", "email", "adr", "url", "text"):
+    for key in ("empty", "tel", "email", "adr", "url", "text", "bday"):
         removed = report.removed.get(key, 0)
         reformatted = report.reformatted.get(key, 0)
         if removed > 0 or reformatted > 0:
@@ -197,8 +242,10 @@ def sanitize(ctx):
 
     db.close()
 
-    _log_session_event("sanitize",
-                       f"{report.total_removed} removed, {report.total_reformatted} reformatted")
+    summary = f"{report.total_removed} removed, {report.total_reformatted} reformatted"
+    if resolved_bdays:
+        summary += f", {resolved_bdays} ambiguous BDAYs resolved"
+    _log_session_event("sanitize", summary)
     _auto_export(ctx, "sanitize")
 
 

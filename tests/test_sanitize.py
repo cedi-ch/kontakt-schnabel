@@ -1,7 +1,7 @@
 """Tests for within-contact field sanitization."""
 
 from schnabel.model import Contact, ContactField
-from schnabel.sanitize import sanitize_contacts
+from schnabel.sanitize import sanitize_contacts, _parse_bday, BdayAmbiguous
 
 
 def _make_contact(fields: list[tuple[str, str]], fn: str = "Test") -> Contact:
@@ -149,3 +149,117 @@ def test_url_www_dedup(tmp_db):
     urls = [f for f in contact.fields if f.field_type == "url"]
     assert len(urls) == 1
     assert report.removed["url"] == 1
+
+
+# ── BDAY parsing unit tests ──────────────────────────────────────────────
+
+
+def test_bday_already_iso():
+    """Already clean ISO date → None (no change)."""
+    assert _parse_bday("1985-04-03") is None
+
+
+def test_bday_partial_date_clean():
+    """Already clean partial date --MM-DD → None."""
+    assert _parse_bday("--04-03") is None
+
+
+def test_bday_compact_iso():
+    """Compact YYYYMMDD → normalized."""
+    assert _parse_bday("19850403") == "1985-04-03"
+
+
+def test_bday_datetime_strip_time():
+    """DateTime YYYY-MM-DDT... → strip time portion."""
+    assert _parse_bday("1985-04-03T12:00:00Z") == "1985-04-03"
+
+
+def test_bday_swiss_dd_mm_yyyy_unambiguous():
+    """DD.MM.YYYY with day > 12 → unambiguous Swiss format."""
+    assert _parse_bday("25.03.1985") == "1985-03-25"
+
+
+def test_bday_swiss_dd_mm_yy():
+    """DD.MM.YY with 2-digit year expansion."""
+    assert _parse_bday("25.03.85") == "1985-03-25"
+
+
+def test_bday_swiss_dd_mm_yy_2000s():
+    """DD.MM.YY with year ≤ 30 → 20xx."""
+    assert _parse_bday("15.06.05") == "2005-06-15"
+
+
+def test_bday_dd_mm_no_year():
+    """DD.MM without year → partial date --MM-DD."""
+    assert _parse_bday("25.03.") == "--03-25"
+    assert _parse_bday("25.03") == "--03-25"
+
+
+def test_bday_dd_mm_both_le_12_assumes_swiss():
+    """DD.MM.YYYY with both ≤ 12 assumes DD.MM (Swiss locale)."""
+    assert _parse_bday("03.04.1985") == "1985-04-03"
+
+
+def test_bday_slash_unambiguous():
+    """Slash-separated with day > 12 → unambiguous."""
+    assert _parse_bday("25/03/1985") == "1985-03-25"
+
+
+def test_bday_slash_ambiguous():
+    """Slash-separated with both ≤ 12 → BdayAmbiguous."""
+    result = _parse_bday("03/04/1985")
+    assert isinstance(result, BdayAmbiguous)
+    assert result.option_a == "1985-04-03"  # DD/MM (European)
+    assert result.option_b == "1985-03-04"  # MM/DD (US)
+    assert "April" in result.label_a
+    assert "März" in result.label_b
+
+
+def test_bday_text_german():
+    """German text date: '15. März 1985'."""
+    assert _parse_bday("15. März 1985") == "1985-03-15"
+
+
+def test_bday_text_english():
+    """English text date: 'March 15, 1985'."""
+    assert _parse_bday("March 15, 1985") == "1985-03-15"
+
+
+def test_bday_sanitize_integration(tmp_db):
+    """BDAY normalization through the full sanitize pipeline."""
+    c = _make_contact([
+        ("bday", "19850403"),
+        ("email", "test@example.com"),
+    ])
+    cid = tmp_db.insert_contact(c)
+    tmp_db.commit()
+
+    report = sanitize_contacts(tmp_db)
+
+    contact = tmp_db.get_contact(cid)
+    bdays = [f for f in contact.fields if f.field_type == "bday"]
+    assert len(bdays) == 1
+    assert bdays[0].field_value == "1985-04-03"
+    assert report.reformatted["bday"] == 1
+
+
+def test_bday_ambiguous_collected(tmp_db):
+    """Ambiguous BDAY is collected, not auto-resolved."""
+    c = _make_contact([
+        ("bday", "03/04/1985"),
+    ], fn="Hans Muster")
+    cid = tmp_db.insert_contact(c)
+    tmp_db.commit()
+
+    report = sanitize_contacts(tmp_db)
+
+    assert len(report.ambiguous_bdays) == 1
+    amb = report.ambiguous_bdays[0]
+    assert amb.contact_id == cid
+    assert amb.contact_fn == "Hans Muster"
+    assert amb.option_a == "1985-04-03"
+    assert amb.option_b == "1985-03-04"
+    # Field should NOT have been changed yet
+    contact = tmp_db.get_contact(cid)
+    bdays = [f for f in contact.fields if f.field_type == "bday"]
+    assert bdays[0].field_value == "03/04/1985"
