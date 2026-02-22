@@ -116,22 +116,27 @@ def _render_contact(contact: ParsedContact, idx: int, total: int,
     line1.append("=verwerfen  ")
     line1.append("s", style="bold yellow")
     line1.append("=\u00fcberspringen  ")
-    line1.append("e", style="bold blue")
-    line1.append("=bearbeiten")
+    line1.append("b", style="bold cyan")
+    line1.append("=zur\u00fcck")
     console.print(line1)
 
     line2 = Text()
-    line2.append(" d", style="bold red")
+    line2.append(" e", style="bold blue")
+    line2.append("=bearbeiten  ")
+    line2.append("d", style="bold red")
     line2.append("=feld l\u00f6schen  ")
     line2.append("w", style="bold magenta")
     line2.append("=typ wechseln  ")
     line2.append("+", style="bold green")
-    line2.append("=feld hinzuf\u00fcgen  ")
-    line2.append("?", style="dim")
-    line2.append("=hilfe  ")
-    line2.append("q", style="dim")
-    line2.append("=quit")
+    line2.append("=feld hinzuf\u00fcgen")
     console.print(line2)
+
+    line3 = Text()
+    line3.append(" ?", style="dim")
+    line3.append("=hilfe  ")
+    line3.append("q", style="dim")
+    line3.append("=quit")
+    console.print(line3)
 
 
 def _prompt_field_number(contact: ParsedContact, prompt_text: str = "Feld #: ") -> int | None:
@@ -241,13 +246,14 @@ def _show_help():
     console.clear()
     console.print(Panel(
         "[bold]Tastaturk\u00fcrzel[/bold]\n\n"
-        "[green]a[/green]  akzeptieren: Kontakt \u00fcbernehmen\n"
-        "[red]r[/red]  verwerfen: Kontakt l\u00f6schen\n"
+        "[green]a[/green]  akzeptieren: Kontakt \u00fcbernehmen, weiter\n"
+        "[red]r[/red]  verwerfen: Kontakt l\u00f6schen, weiter\n"
         "[yellow]s[/yellow]  \u00fcberspringen: sp\u00e4ter nochmal anschauen\n"
-        "[blue]e[/blue]  bearbeiten: Feldwert \u00e4ndern\n"
-        "[red]d[/red]  feld l\u00f6schen: ein Feld entfernen\n"
-        "[magenta]w[/magenta]  typ wechseln: Feldtyp \u00e4ndern (z.B. FN \u2192 ORG)\n"
-        "[green]+[/green]  feld hinzuf\u00fcgen: neues Feld manuell eingeben\n"
+        "[cyan]b[/cyan]  zur\u00fcck: vorherigen Kontakt nochmal anzeigen\n"
+        "[blue]e[/blue]  bearbeiten: Feldwert \u00e4ndern (bleibt beim Kontakt)\n"
+        "[red]d[/red]  feld l\u00f6schen: ein Feld entfernen (bleibt beim Kontakt)\n"
+        "[magenta]w[/magenta]  typ wechseln: Feldtyp \u00e4ndern (bleibt beim Kontakt)\n"
+        "[green]+[/green]  feld hinzuf\u00fcgen: neues Feld eingeben (bleibt beim Kontakt)\n"
         "[dim]?[/dim]  diese Hilfe\n"
         "[dim]q[/dim]  beenden (akzeptierte Kontakte werden gespeichert)\n\n"
         "[bold]Konfidenz:[/bold] \u2605\u2605\u2605 hoch  \u2605\u2605\u2606 mittel  \u2605\u2606\u2606 tief\n\n"
@@ -267,60 +273,88 @@ def run_raw_tui(contacts: list[ParsedContact]) -> list[ParsedContact]:
         return contacts
 
     quit_requested = False
+    # History of visited contact indices (for back navigation)
+    history: list[int] = []
 
     while not quit_requested:
-        # Count pending contacts for this pass
+        # Collect pending contacts for this pass
         pending_ids = [i for i, c in enumerate(contacts) if c.status == "pending"]
         if not pending_ids:
             break
 
-        for idx in pending_ids:
+        pos = 0  # position within pending_ids
+        history.clear()
+
+        while pos < len(pending_ids) and not quit_requested:
+            idx = pending_ids[pos]
             contact = contacts[idx]
             if contact.status != "pending":
+                pos += 1
                 continue
 
-            accepted = sum(1 for c in contacts if c.status == "accepted")
-            rejected = sum(1 for c in contacts if c.status == "rejected")
+            # Inner loop: stay on this contact until a/r/s/b/q
+            while True:
+                accepted = sum(1 for c in contacts if c.status == "accepted")
+                rejected = sum(1 for c in contacts if c.status == "rejected")
+                _render_contact(contact, idx, len(contacts), accepted, rejected)
 
-            _render_contact(contact, idx, len(contacts), accepted, rejected)
+                key = readchar.readchar()
 
-            key = readchar.readchar()
+                if key == "q":
+                    quit_requested = True
+                    break
 
-            if key == "q":
-                quit_requested = True
-                break
+                elif key == "a":
+                    contact.status = "accepted"
+                    history.append(pos)
+                    pos += 1
+                    break
 
-            elif key == "a":
-                contact.status = "accepted"
+                elif key == "r":
+                    contact.status = "rejected"
+                    history.append(pos)
+                    pos += 1
+                    break
 
-            elif key == "r":
-                contact.status = "rejected"
+                elif key == "s":
+                    history.append(pos)
+                    pos += 1
+                    break
 
-            elif key == "s":
-                pass  # bleibt pending, kommt nächste Runde wieder
+                elif key == "b":
+                    if history:
+                        prev_pos = history.pop()
+                        # Undo the status change so it's pending again
+                        prev_contact = contacts[pending_ids[prev_pos]]
+                        prev_contact.status = "pending"
+                        pos = prev_pos
+                    else:
+                        console.print("\n  [dim]Kein vorheriger Kontakt.[/dim]")
+                        import time
+                        time.sleep(0.5)
+                    break
 
-            elif key == "e":
-                _edit_field(contact)
+                elif key == "e":
+                    _edit_field(contact)
+                    # stays in inner loop → re-renders
 
-            elif key == "d":
-                _delete_field(contact)
+                elif key == "d":
+                    _delete_field(contact)
 
-            elif key == "w":
-                _change_type(contact)
+                elif key == "w":
+                    _change_type(contact)
 
-            elif key == "+":
-                _add_field(contact)
+                elif key == "+":
+                    _add_field(contact)
 
-            elif key == "?":
-                _show_help()
+                elif key == "?":
+                    _show_help()
 
         # End of pass — check if we should loop
         if not quit_requested:
             pending = sum(1 for c in contacts if c.status == "pending")
             if pending == 0:
                 break
-            accepted = sum(1 for c in contacts if c.status == "accepted")
-            rejected = sum(1 for c in contacts if c.status == "rejected")
             console.print(
                 f"\n[yellow]Durchlauf fertig. {pending} \u00fcbersprungen "
                 f"\u2014 starte n\u00e4chste Runde...[/yellow]"
