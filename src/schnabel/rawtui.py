@@ -20,6 +20,7 @@ FIELD_TYPES = {
     "5": "org",
     "6": "url",
     "7": "note",
+    "8": "bday",
 }
 
 FIELD_LABELS = {
@@ -30,6 +31,7 @@ FIELD_LABELS = {
     "org": "ORG",
     "url": "URL",
     "note": "NOTE",
+    "bday": "BDAY",
     "unknown": "???",
 }
 
