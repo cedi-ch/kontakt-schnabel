@@ -810,6 +810,138 @@ def split(ctx, input_file, output_dir, no_rest, pending):
             console.print(f"\n[bold green]Dateien geschrieben → {output_path}/[/bold green]")
 
 
+# ── Compare ───────────────────────────────────────────────────────────
+
+@cli.command()
+@click.argument("file_a", type=click.Path(exists=True))
+@click.argument("file_b", type=click.Path(exists=True))
+@click.option("--min-confidence", type=float, default=0.40,
+              help="Minimum confidence for matching (default 0.40).")
+def compare(file_a, file_b, min_confidence):
+    """Compare two VCF files side-by-side and show differences.
+
+    Matches contacts across FILE_A and FILE_B, then launches a read-only TUI
+    showing only the differences — with color-highlighted field diffs.
+    """
+    from schnabel.compare import find_cross_file_pairs, run_compare_tui
+    from schnabel.reader import parse_vcf_file
+
+    path_a = Path(file_a)
+    path_b = Path(file_b)
+
+    with console.status("[bold cyan]Parsing..."):
+        contacts_a, enc_a = parse_vcf_file(path_a)
+        contacts_b, enc_b = parse_vcf_file(path_b)
+
+    console.print(f"  {path_a.name}: {len(contacts_a)} Kontakte (enc: {enc_a})")
+    console.print(f"  {path_b.name}: {len(contacts_b)} Kontakte (enc: {enc_b})")
+
+    if not contacts_a and not contacts_b:
+        console.print("[yellow]Beide Dateien leer.[/yellow]")
+        return
+
+    with console.status("[bold cyan]Matching..."):
+        result = find_cross_file_pairs(contacts_a, contacts_b,
+                                       min_confidence=min_confidence)
+
+    n_identical = len(result["matched_identical"])
+    n_different = len(result["matched_different"])
+    n_only_a = len(result["only_a"])
+    n_only_b = len(result["only_b"])
+    n_matched = n_identical + n_different
+    n_total_diff = n_different + n_only_a + n_only_b
+
+    console.print(f"\n[bold]Ergebnis:[/bold]")
+    console.print(f"  Gematcht: {n_matched} ({n_identical} identisch, {n_different} verschieden)")
+    if n_only_a:
+        console.print(f"  Nur in {path_a.name}: {n_only_a}")
+    if n_only_b:
+        console.print(f"  Nur in {path_b.name}: {n_only_b}")
+
+    if n_total_diff == 0:
+        console.print("\n[bold green]Dateien identisch.[/bold green]")
+        return
+
+    console.print(f"\n[bold cyan]{n_total_diff} Unterschiede — TUI starten...[/bold cyan]")
+    name_a = path_a.stem
+    name_b = path_b.stem
+    run_compare_tui(result["matched_different"], result["only_a"], result["only_b"],
+                    name_a, name_b)
+
+    _log_session_event("compare",
+                       f"{path_a.name} vs {path_b.name}: "
+                       f"{n_matched} matched ({n_identical} identical), "
+                       f"{n_only_a} only-A, {n_only_b} only-B")
+
+
+# ── Split-Export ──────────────────────────────────────────────────────
+
+@cli.command("split-export")
+@click.option("-o", "--output-dir", type=click.Path(), default=None,
+              help="Output directory (default: timestamped directory).")
+@click.option("--no-rest", is_flag=True,
+              help="Don't write rest.vcf for unassigned contacts.")
+@click.pass_context
+def split_export(ctx, output_dir, no_rest):
+    """Export contacts from a saved split session (no TUI).
+
+    Reads the split state saved by 'schnabel split' and writes VCF files.
+    The state file is preserved so you can re-export with different options.
+    """
+    from schnabel.splittui import load_split_state, write_split_files
+
+    state_path = DEFAULT_OUTPUT_DIR / ".split_state.json"
+    state = load_split_state(state_path)
+
+    if not state:
+        console.print("[red]Kein gespeicherter Split-Zustand gefunden.[/red]")
+        console.print("[dim]Zuerst 'schnabel split' ausführen.[/dim]")
+        return
+
+    contacts = state["contacts"]
+    targets = state["targets"]
+    assignments = state["assignments"]
+    deleted = state["deleted"]
+
+    # Summary
+    pending_count = sum(
+        1 for i in range(len(contacts))
+        if i not in assignments and i not in deleted
+    )
+    console.print(f"\n[bold cyan]Split-Export[/bold cyan]")
+    console.print(f"  Kontakte total: {len(contacts)}")
+    console.print(f"  Zugewiesen: {len(assignments)}")
+    console.print(f"  Gelöscht: {len(deleted)}")
+    if pending_count:
+        console.print(f"  [yellow]Offen (nicht zugewiesen): {pending_count}[/yellow]")
+    console.print()
+
+    for i, t in enumerate(targets):
+        count = sum(1 for v in assignments.values() if v == i)
+        if count:
+            console.print(f"  [{t.key}] {t.name}: {count} Kontakte")
+
+    output_path = Path(output_dir) if output_dir else make_output_dir("split-export")
+
+    written = write_split_files(contacts, targets, assignments, output_path,
+                                write_rest=not no_rest, deleted=deleted)
+
+    if deleted:
+        console.print(f"\n[red]{len(deleted)} Kontakte gelöscht.[/red]")
+    console.print(f"\n[bold green]Aufgeteilt:[/bold green]")
+    for filename, count in written.items():
+        console.print(f"  {filename}: {count} Kontakte")
+
+    if not written:
+        console.print("  [dim](keine Kontakte zugewiesen)[/dim]")
+
+    if written:
+        console.print(f"\n[bold green]Dateien geschrieben → {output_path}/[/bold green]")
+
+    total = sum(written.values())
+    _log_session_event("split-export", f"{total} contacts → {output_path}")
+
+
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
 def _auto_export(ctx, command_name: str):

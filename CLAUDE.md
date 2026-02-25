@@ -30,6 +30,7 @@ src/schnabel/
 ├── merge.py        # Merge engine with aggressiveness parameter and undo
 ├── tui.py          # Rich + readchar TUI for manual dedup review (with back navigation)
 ├── splittui.py     # Rich + readchar TUI for splitting VCF files
+├── compare.py      # Cross-file contact comparison: matching + read-only diff TUI
 └── export.py       # vCard 3.0 writer (custom, RFC 2426 compliant) + photo extraction
 ```
 
@@ -54,6 +55,8 @@ schnabel rawparse FILE [-o OUT.vcf]    # Parse contacts from raw text files
 schnabel rawparse FILE --auto-accept   # Skip TUI, accept all parsed contacts
 schnabel rawparse --pending            # Resume: only skipped contacts
 schnabel rawparse FILE --db-import     # Also import into main database
+schnabel compare FILE_A FILE_B         # Compare two VCF files side-by-side (read-only diff TUI)
+schnabel compare --min-confidence 0.6 a.vcf b.vcf  # Stricter matching threshold
 schnabel split FILE [-o DIR]           # Split VCF into named target files
 schnabel split --pending               # Resume split session
 ```
