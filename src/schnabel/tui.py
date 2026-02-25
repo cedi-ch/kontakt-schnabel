@@ -40,6 +40,7 @@ FIELD_LABELS = {
     "nickname": "NICKNAME",
     "role": "ROLE",
     "title": "TITLE",
+    "categories": "CAT",
 }
 
 
@@ -180,6 +181,7 @@ def render_pair(pair: dict, contact_a, contact_b, pair_idx: int, total: int,
     _field_rows("title", "TITLE")
     _field_rows("nickname", "NICK")
     _field_rows("role", "ROLE")
+    _field_rows("categories", "CAT")
 
     # Render rows
     for label, lt, left, sym, right, rt in rows:

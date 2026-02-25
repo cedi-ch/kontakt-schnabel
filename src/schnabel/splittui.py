@@ -42,6 +42,7 @@ FIELD_LABELS = {
     "nickname": "NICKNAME",
     "role": "ROLE",
     "title": "TITLE",
+    "categories": "CAT",
 }
 
 

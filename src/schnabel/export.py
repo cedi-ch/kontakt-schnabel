@@ -126,6 +126,18 @@ def contact_to_vcard(contact: Contact) -> str:
             lines.append(f"NICKNAME:{_escape_vcard_value(f.field_value)}")
         elif f.field_type == "role":
             lines.append(f"ROLE:{_escape_vcard_value(f.field_value)}")
+        elif f.field_type == "categories":
+            pass  # handled after field loop
+
+    # CATEGORIES — collect, case-insensitive dedup, emit single line
+    cat_values = [f.field_value for f in contact.fields if f.field_type == "categories"]
+    if cat_values:
+        seen_cats: dict[str, str] = {}
+        for cv in cat_values:
+            key = cv.lower()
+            if key not in seen_cats:
+                seen_cats[key] = cv
+        lines.append(f"CATEGORIES:{','.join(seen_cats.values())}")
 
     # Photo
     for photo in contact.photos:

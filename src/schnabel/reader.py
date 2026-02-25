@@ -257,6 +257,13 @@ def _fallback_parse(vcard_text: str, source_file: str) -> Contact | None:
             val = line[4:].strip()
             if val:
                 contact.fields.append(ContactField("url", val))
+        elif line.upper().startswith("CATEGORIES:"):
+            val = line.split(":", 1)[1].strip()
+            if val:
+                for cat in val.split(","):
+                    cat = cat.strip()
+                    if cat:
+                        contact.fields.append(ContactField("categories", cat))
         # Photos handled via PHOTO;ENCODING=b — skip in fallback (too messy)
 
     # Construct FN from N if missing
@@ -373,6 +380,20 @@ def parse_vcard(vcard_text: str, source_file: str = "") -> Contact | None:
             bday_str = str(bday)
         if bday_str:
             contact.fields.append(ContactField("bday", bday_str))
+
+    # CATEGORIES
+    if hasattr(vcard, "categories"):
+        cats = vcard.categories.value
+        if isinstance(cats, list):
+            for cat in cats:
+                cat = cat.strip()
+                if cat:
+                    contact.fields.append(ContactField("categories", cat))
+        elif isinstance(cats, str) and cats.strip():
+            for cat in cats.split(","):
+                cat = cat.strip()
+                if cat:
+                    contact.fields.append(ContactField("categories", cat))
 
     # PHOTO
     photo = _extract_photo(vcard)

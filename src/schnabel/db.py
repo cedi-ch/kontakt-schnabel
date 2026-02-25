@@ -414,6 +414,38 @@ class Database:
     def delete_merge(self, merge_id: int):
         self.conn.execute("DELETE FROM merge_history WHERE id = ?", (merge_id,))
 
+    # -- Categories --
+
+    def get_all_category_values(self) -> list[str]:
+        """Get all distinct category values, sorted."""
+        rows = self.conn.execute(
+            """SELECT DISTINCT cf.field_value FROM contact_fields cf
+               JOIN contacts c ON cf.contact_id = c.id
+               WHERE cf.field_type = 'categories' AND c.is_active = 1
+               ORDER BY cf.field_value COLLATE NOCASE"""
+        ).fetchall()
+        return [row["field_value"] for row in rows]
+
+    def get_categorized_contact_ids(self, uncategorized_only: bool = False) -> list[int]:
+        """Get active real contact IDs, optionally only those without categories."""
+        if uncategorized_only:
+            rows = self.conn.execute(
+                """SELECT c.id FROM contacts c
+                   WHERE c.is_active = 1 AND c.category = 'real'
+                   AND c.id NOT IN (
+                       SELECT DISTINCT contact_id FROM contact_fields
+                       WHERE field_type = 'categories'
+                   )
+                   ORDER BY c.fn COLLATE NOCASE"""
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                """SELECT c.id FROM contacts c
+                   WHERE c.is_active = 1 AND c.category = 'real'
+                   ORDER BY c.fn COLLATE NOCASE"""
+            ).fetchall()
+        return [row["id"] for row in rows]
+
     # -- Stats --
 
     def get_stats(self) -> dict:
@@ -465,6 +497,20 @@ class Database:
 
         row = self.conn.execute("SELECT COUNT(*) as n FROM import_sources").fetchone()
         stats["import_sources"] = row["n"]
+
+        row = self.conn.execute(
+            """SELECT COUNT(DISTINCT cf.field_value) as n FROM contact_fields cf
+               JOIN contacts c ON cf.contact_id = c.id
+               WHERE cf.field_type = 'categories' AND c.is_active = 1"""
+        ).fetchone()
+        stats["unique_categories"] = row["n"]
+
+        row = self.conn.execute(
+            """SELECT COUNT(DISTINCT cf.contact_id) as n FROM contact_fields cf
+               JOIN contacts c ON cf.contact_id = c.id
+               WHERE cf.field_type = 'categories' AND c.is_active = 1"""
+        ).fetchone()
+        stats["contacts_with_categories"] = row["n"]
 
         return stats
 

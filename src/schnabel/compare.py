@@ -395,6 +395,7 @@ def _render_diff(contact_a: Contact, contact_b: Contact):
     _field_rows("title", "TITLE")
     _field_rows("nickname", "NICK")
     _field_rows("role", "ROLE")
+    _field_rows("categories", "CAT")
 
     _print_rows(rows)
 
@@ -418,7 +419,7 @@ def _render_single_side(contact: Contact, side: str, missing_label: str):
         label = {
             "email": "EMAIL", "tel": "TEL", "adr": "ADR", "org": "ORG",
             "url": "URL", "note": "NOTE", "bday": "BDAY", "title": "TITLE",
-            "nickname": "NICK", "role": "ROLE",
+            "nickname": "NICK", "role": "ROLE", "categories": "CAT",
         }.get(f.field_type, f.field_type.upper())
         rows.append(make_row(f"{label}:", f.field_value))
 

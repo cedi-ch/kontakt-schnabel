@@ -874,6 +874,30 @@ def compare(file_a, file_b, min_confidence):
                        f"{n_only_a} only-A, {n_only_b} only-B")
 
 
+# ── Categorize ────────────────────────────────────────────────────────
+
+@cli.command()
+@click.option("--uncategorized", is_flag=True,
+              help="Only show contacts without any categories.")
+@click.pass_context
+def categorize(ctx, uncategorized):
+    """Interactively assign categories to contacts."""
+    from schnabel.cattui import run_categorize_tui
+
+    db = get_db(ctx.obj["db_path"])
+    stats = db.get_stats()
+    if stats["real"] == 0:
+        console.print("[red]Keine 'real'-Kontakte. Zuerst 'schnabel import' ausf\u00fchren.[/red]")
+        db.close()
+        return
+
+    run_categorize_tui(db, uncategorized_only=uncategorized)
+    db.close()
+
+    _log_session_event("categorize", "category assignment session")
+    _auto_export(ctx, "categorize")
+
+
 # ── Split-Export ──────────────────────────────────────────────────────
 
 @cli.command("split-export")
@@ -993,5 +1017,9 @@ def _print_stats_table(stats: dict):
     table.add_row("Import sources", str(stats["import_sources"]))
     table.add_row("Pending pairs", str(stats["pending_pairs"]))
     table.add_row("Merges done", str(stats["merges"]))
+
+    if stats.get("unique_categories", 0) > 0:
+        table.add_row("Categories", str(stats["unique_categories"]))
+        table.add_row("With categories", str(stats["contacts_with_categories"]))
 
     console.print(table)

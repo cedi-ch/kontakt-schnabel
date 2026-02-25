@@ -31,6 +31,7 @@ src/schnabel/
 ├── tui.py          # Rich + readchar TUI for manual dedup review (with back navigation)
 ├── splittui.py     # Rich + readchar TUI for splitting VCF files
 ├── compare.py      # Cross-file contact comparison: matching + read-only diff TUI
+├── cattui.py       # Rich + readchar TUI for interactive category assignment
 └── export.py       # vCard 3.0 writer (custom, RFC 2426 compliant) + photo extraction
 ```
 
@@ -59,6 +60,8 @@ schnabel compare FILE_A FILE_B         # Compare two VCF files side-by-side (rea
 schnabel compare --min-confidence 0.6 a.vcf b.vcf  # Stricter matching threshold
 schnabel split FILE [-o DIR]           # Split VCF into named target files
 schnabel split --pending               # Resume split session
+schnabel categorize                    # Interactive category assignment TUI
+schnabel categorize --uncategorized    # Only show contacts without categories
 ```
 
 **Global flags:** `--db PATH` (database path), `--no-export` (skip auto-export after data changes)

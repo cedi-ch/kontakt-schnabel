@@ -398,8 +398,8 @@ def sanitize_contacts(db: Database, progress_callback=None) -> SanitizeReport:
                     db.update_contact_field(best_id, normalized)
                     report.reformatted["url"] += 1
 
-        # Step 6: Simple text dedup (ORG, TITLE, NICKNAME, ROLE, NOTE)
-        for ftype in ("org", "title", "nickname", "role", "note"):
+        # Step 6: Simple text dedup (ORG, TITLE, NICKNAME, ROLE, NOTE, CATEGORIES)
+        for ftype in ("org", "title", "nickname", "role", "note", "categories"):
             text_fields = [(f.id, f.field_value) for f in contact.fields if f.field_type == ftype]
             if len(text_fields) > 1:
                 seen_text: dict[str, int] = {}

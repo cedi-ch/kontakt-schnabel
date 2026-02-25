@@ -60,6 +60,10 @@ class Contact:
         return [f.field_value for f in self.fields if f.field_type == "org"]
 
     @property
+    def categories(self) -> list[str]:
+        return [f.field_value for f in self.fields if f.field_type == "categories"]
+
+    @property
     def has_structured_name(self) -> bool:
         """True if the contact has a real name (not just N:;;;;)."""
         return bool(self.family_name.strip() or self.given_name.strip())
