@@ -510,7 +510,7 @@ def stats(ctx):
 @cli.command()
 @click.option("--confirm", is_flag=True, help="Skip confirmation prompt.")
 @click.pass_context
-def reset(ctx):
+def reset(ctx, confirm):
     """Reset the database: delete all data and start fresh."""
     db_path = ctx.obj["db_path"]
 
@@ -527,7 +527,7 @@ def reset(ctx):
     console.print(f"  Paare: {st['pending_pairs']}")
     db.close()
 
-    if not ctx.params.get("confirm"):
+    if not confirm:
         try:
             answer = input("\nFortfahren? (ja/nein): ").strip().lower()
         except (EOFError, KeyboardInterrupt):
@@ -708,7 +708,8 @@ def rawparse(ctx, input_file, output_file, db_import, auto_accept, pending):
               help="Don't write rest.vcf for unassigned contacts.")
 @click.option("--pending", is_flag=True,
               help="Resume: continue from saved split state.")
-def split(input_file, output_dir, no_rest, pending):
+@click.pass_context
+def split(ctx, input_file, output_dir, no_rest, pending):
     """Interactively split a VCF file into multiple named target files."""
     from schnabel.splittui import (
         _start_dialog, load_split_state, run_split_tui,
