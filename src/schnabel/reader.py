@@ -75,20 +75,45 @@ def fix_broken_qp(text: str) -> str:
     # Fix literal \n (backslash + n) inside QP sequences: =X\nY → =XY
     text = re.sub(r"=([0-9A-Fa-f])\\n([0-9A-Fa-f])", r"=\1\2", text)
 
-    # Now decode any remaining =XX QP hex sequences (but not in PHOTO/binary lines)
-    def decode_qp_in_line(line: str) -> str:
-        upper = line.strip().upper()
-        if upper.startswith("PHOTO") or upper.startswith("LOGO"):
-            return line
-        if not re.search(r"=[0-9A-Fa-f]{2}", line):
-            return line
-        try:
-            import quopri
-            return quopri.decodestring(line.encode("utf-8")).decode("utf-8")
-        except Exception:
-            return line
+    # Now decode any remaining =XX QP hex sequences (but not in PHOTO/binary lines).
+    # Must track multi-line fields: PHOTO/LOGO data spans many continuation lines
+    # (lines starting with space/tab per RFC 2426 folding).
+    lines = text.split("\n")
+    result_lines = []
+    in_binary_field = False
 
-    return "\n".join(decode_qp_in_line(line) for line in text.split("\n"))
+    for line in lines:
+        stripped = line.strip().upper()
+
+        # Detect start of a binary field (PHOTO or LOGO)
+        if stripped.startswith("PHOTO") or stripped.startswith("LOGO"):
+            in_binary_field = True
+            result_lines.append(line)
+            continue
+
+        # Continuation line (starts with space or tab) — part of previous field
+        if line and line[0] in (" ", "\t"):
+            if in_binary_field:
+                result_lines.append(line)
+                continue
+            # Non-binary continuation: fall through to QP decode
+        else:
+            # New field line — no longer in binary field
+            in_binary_field = False
+
+        # Decode QP in non-binary lines
+        if not re.search(r"=[0-9A-Fa-f]{2}", line):
+            result_lines.append(line)
+        else:
+            try:
+                import quopri
+                result_lines.append(
+                    quopri.decodestring(line.encode("utf-8")).decode("utf-8")
+                )
+            except Exception:
+                result_lines.append(line)
+
+    return "\n".join(result_lines)
 
 
 def split_vcards(text: str) -> list[str]:
@@ -208,18 +233,48 @@ def _str_field(value) -> str:
     return str(value).strip() if value else ""
 
 
+def _unfold_lines(text: str) -> list[str]:
+    """Unfold RFC 2426 continuation lines (lines starting with space/tab).
+
+    Joins continuation lines to their preceding logical line so that
+    multi-line fields (especially PHOTO base64 data) aren't split up.
+    """
+    raw_lines = text.split("\n")
+    logical_lines: list[str] = []
+
+    for raw in raw_lines:
+        if raw and raw[0] in (" ", "\t"):
+            # Continuation line — append to previous logical line
+            if logical_lines:
+                logical_lines[-1] += raw[1:]  # strip leading space/tab
+            # else: orphan continuation line — ignore
+        else:
+            logical_lines.append(raw)
+
+    return logical_lines
+
+
 def _fallback_parse(vcard_text: str, source_file: str) -> Contact | None:
-    """Regex-based fallback parser for vCards that vobject can't handle."""
+    """Regex-based fallback parser for vCards that vobject can't handle.
+
+    First unfolds continuation lines so multi-line PHOTO data doesn't
+    bleed into field extraction.
+    """
     contact = Contact(source_file=source_file, raw_vcard=vcard_text)
 
-    for line in vcard_text.split("\n"):
+    for line in _unfold_lines(vcard_text):
         line = line.strip()
         if not line or line.upper() in ("BEGIN:VCARD", "END:VCARD"):
             continue
 
-        if line.upper().startswith("FN:"):
+        # Skip binary fields (PHOTO, LOGO) — too complex for regex parsing
+        upper = line.upper()
+        if upper.startswith("PHOTO") or upper.startswith("LOGO"):
+            continue
+
+        if upper.startswith("FN:"):
             contact.fn = line[3:].strip()
-        elif line.upper().startswith("N:") or line.upper().startswith("N;"):
+        elif upper.startswith("N:") or upper.startswith("N;"):
             # Parse N:family;given;additional;prefix;suffix
             val = line.split(":", 1)[1] if ":" in line else ""
             parts = val.split(";")
@@ -233,38 +288,38 @@ def _fallback_parse(vcard_text: str, source_file: str) -> Contact | None:
                 contact.prefix = parts[3].strip()
             if len(parts) >= 5:
                 contact.suffix = parts[4].strip()
-        elif "EMAIL" in line.upper() and ":" in line:
+        elif "EMAIL" in upper and ":" in line:
             val = line.split(":", 1)[1].strip()
             if val and "@" in val:
                 contact.fields.append(ContactField("email", val))
-        elif "TEL" in line.upper() and ":" in line:
+        elif "TEL" in upper and ":" in line:
             val = line.split(":", 1)[1].strip()
             if val:
                 contact.fields.append(ContactField("tel", val))
-        elif line.upper().startswith("ORG:"):
+        elif upper.startswith("ORG:"):
             val = line[4:].strip()
             if val:
                 contact.fields.append(ContactField("org", val))
-        elif line.upper().startswith("TITLE:"):
+        elif upper.startswith("TITLE:"):
             val = line[6:].strip()
             if val:
                 contact.fields.append(ContactField("title", val))
-        elif line.upper().startswith("BDAY"):
+        elif upper.startswith("BDAY"):
             val = line.split(":", 1)[1].strip() if ":" in line else ""
             if val:
                 contact.fields.append(ContactField("bday", val))
-        elif line.upper().startswith("URL:"):
+        elif upper.startswith("URL:"):
             val = line[4:].strip()
             if val:
                 contact.fields.append(ContactField("url", val))
-        elif line.upper().startswith("CATEGORIES:"):
+        elif upper.startswith("CATEGORIES:"):
             val = line.split(":", 1)[1].strip()
             if val:
                 for cat in val.split(","):
                     cat = cat.strip()
                     if cat:
                         contact.fields.append(ContactField("categories", cat))
-        # Photos handled via PHOTO;ENCODING=b — skip in fallback (too messy)
+        # PHOTO/LOGO already skipped above
 
     # Construct FN from N if missing
     if not contact.fn and (contact.given_name or contact.family_name):
