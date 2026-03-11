@@ -874,6 +874,41 @@ def compare(file_a, file_b, min_confidence):
                        f"{n_only_a} only-A, {n_only_b} only-B")
 
 
+# ── PDF ────────────────────────────────────────────────────────────────
+
+@cli.command()
+@click.argument("input_file", type=click.Path(exists=True))
+@click.option("-o", "--output", "output_file", type=click.Path(), default=None,
+              help="Output PDF path (default: same name as input, .pdf extension).")
+@click.option("--title", default=None, help="Custom title for the PDF document.")
+def pdf(input_file, output_file, title):
+    """Generate a PDF phone list from a VCF file.
+
+    One A4 landscape page per letter, sorted alphabetically by surname,
+    then by firstname within each letter. Columns: Name, Phone, Email.
+    """
+    from schnabel.pdf import generate_pdf
+
+    input_path = Path(input_file)
+
+    if output_file:
+        output_path = Path(output_file)
+    else:
+        output_path = input_path.with_suffix(".pdf")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with console.status("[bold cyan]Generating PDF..."):
+        count = generate_pdf(input_path, output_path, title=title)
+
+    if count == 0:
+        console.print("[red]Keine Kontakte gefunden — kein PDF erstellt.[/red]")
+        return
+
+    console.print(f"[bold green]{count} Kontakte → {output_path}[/bold green]")
+    _log_session_event("pdf", f"{count} contacts → {output_path}")
+
+
 # ── Categorize ────────────────────────────────────────────────────────
 
 @cli.command()
