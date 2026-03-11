@@ -226,6 +226,79 @@ def _extract_photo(vcard) -> Photo | None:
         return None
 
 
+# Characters valid in real phone numbers and email addresses
+_PHONE_CHARS = set("0123456789+()-. /ext#*")
+_BASE64_CHARS = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=")
+
+
+def _looks_like_base64(value: str) -> bool:
+    """Return True if value looks like base64-encoded binary data.
+
+    Heuristic: long, no spaces, almost all base64 chars.
+    """
+    if len(value) < 200:
+        return False
+    if " " in value or "\t" in value:
+        return False
+    sample = value[:500]
+    b64_count = sum(1 for c in sample if c in _BASE64_CHARS)
+    return b64_count / len(sample) > 0.90
+
+
+def _is_valid_phone(value: str) -> bool:
+    """Return True if value looks like a plausible phone number."""
+    if _looks_like_base64(value):
+        return False
+    # Phone numbers are short — anything over 40 chars is not a phone number
+    if len(value) > 40:
+        return False
+    # Must contain at least one digit
+    if not any(c.isdigit() for c in value):
+        return False
+    return True
+
+
+def _is_valid_email(value: str) -> bool:
+    """Return True if value looks like a plausible email address."""
+    if _looks_like_base64(value):
+        return False
+    if len(value) > 254:  # RFC 5321 max
+        return False
+    if "@" not in value:
+        return False
+    return True
+
+
+def _is_valid_field_value(field_type: str, value: str) -> bool:
+    """Validate a field value — reject binary data that bled into text fields."""
+    if not value or not value.strip():
+        return False
+    if _looks_like_base64(value):
+        return False
+    if field_type == "tel":
+        return _is_valid_phone(value)
+    if field_type == "email":
+        return _is_valid_email(value)
+    # For other field types, just reject obviously huge values (>1000 chars
+    # is not a plausible org, title, note, etc. from a vCard)
+    if field_type in ("org", "title", "nickname", "role") and len(value) > 500:
+        return False
+    return True
+
+
+def _sanitize_contact_fields(contact: Contact) -> Contact:
+    """Remove fields with invalid/corrupt values from a parsed contact.
+
+    This is the last line of defense — catches binary data that bled through
+    any parser (vobject or fallback) into text fields.
+    """
+    contact.fields = [
+        f for f in contact.fields
+        if _is_valid_field_value(f.field_type, f.field_value)
+    ]
+    return contact
+
+
 def _str_field(value) -> str:
     """Convert a vobject name field to string, handling lists."""
     if isinstance(value, list):
@@ -324,6 +397,9 @@ def _fallback_parse(vcard_text: str, source_file: str) -> Contact | None:
     # Construct FN from N if missing
     if not contact.fn and (contact.given_name or contact.family_name):
         contact.fn = f"{contact.given_name} {contact.family_name}".strip()
+
+    # Sanitize: remove any fields with corrupt values
+    _sanitize_contact_fields(contact)
 
     # Only return if we got something useful
     if contact.fn or contact.emails or contact.phones:
@@ -454,6 +530,10 @@ def parse_vcard(vcard_text: str, source_file: str = "") -> Contact | None:
     photo = _extract_photo(vcard)
     if photo:
         contact.photos.append(photo)
+
+    # Sanitize: remove any fields with corrupt values (e.g. base64 photo data
+    # that vobject silently mis-parsed into tel_list or email_list)
+    _sanitize_contact_fields(contact)
 
     return contact
 

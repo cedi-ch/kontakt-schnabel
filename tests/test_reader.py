@@ -1,9 +1,15 @@
 """Tests for vCard parser."""
 
+import base64
+import tempfile
+from pathlib import Path
+
 from schnabel.reader import (
-    _fallback_parse, _unfold_lines, fix_broken_qp,
+    _fallback_parse, _is_valid_field_value, _looks_like_base64,
+    _sanitize_contact_fields, _unfold_lines, fix_broken_qp,
     parse_vcard, parse_vcf_file, split_vcards,
 )
+from schnabel.model import Contact, ContactField
 
 
 def test_split_vcards():
@@ -140,3 +146,221 @@ def test_fix_broken_qp_non_photo_continuation_still_decoded():
     # Both should be decoded
     assert "ü" in result or "=C3=BC" not in result
     assert "ä" in result or "=C3=A4" not in result
+
+
+# -- Field validation: base64 detection and sanitization --
+
+def test_looks_like_base64_detects_photo_data():
+    """Long base64 strings should be detected."""
+    b64 = base64.b64encode(b"\x00" * 300).decode("ascii")
+    assert _looks_like_base64(b64)
+
+
+def test_looks_like_base64_rejects_short_strings():
+    """Short strings should not be flagged as base64."""
+    assert not _looks_like_base64("+41 79 123 45 67")
+    assert not _looks_like_base64("hans@example.com")
+    assert not _looks_like_base64("")
+
+
+def test_looks_like_base64_rejects_text_with_spaces():
+    """Long text with spaces is not base64."""
+    text = "This is a very long note " * 20
+    assert not _looks_like_base64(text)
+
+
+def test_is_valid_phone_rejects_base64():
+    """Base64 data must not pass as a phone number."""
+    b64 = base64.b64encode(b"\xff\xd8\xff\xe0" * 100).decode("ascii")
+    assert not _is_valid_field_value("tel", b64)
+
+
+def test_is_valid_phone_rejects_too_long():
+    """Strings over 40 chars are not phone numbers."""
+    assert not _is_valid_field_value("tel", "1" * 41)
+
+
+def test_is_valid_phone_accepts_normal():
+    """Normal phone numbers should pass."""
+    assert _is_valid_field_value("tel", "+41 79 123 45 67")
+    assert _is_valid_field_value("tel", "079 123 45 67")
+    assert _is_valid_field_value("tel", "+49 170 1234567")
+    assert _is_valid_field_value("tel", "(212) 555-1234")
+
+
+def test_is_valid_email_rejects_base64():
+    """Base64 data must not pass as an email address."""
+    b64 = base64.b64encode(b"\x00" * 300).decode("ascii")
+    assert not _is_valid_field_value("email", b64)
+
+
+def test_is_valid_email_accepts_normal():
+    """Normal email addresses should pass."""
+    assert _is_valid_field_value("email", "hans@example.com")
+    assert _is_valid_field_value("email", "user+tag@sub.domain.org")
+
+
+def test_sanitize_contact_fields_removes_corrupt_tel():
+    """_sanitize_contact_fields must strip base64 from tel fields."""
+    b64 = base64.b64encode(b"\xff\xd8" * 200).decode("ascii")
+    contact = Contact(fn="Test")
+    contact.fields = [
+        ContactField("tel", "+41791234567"),
+        ContactField("tel", b64),  # corrupt — base64 photo data
+        ContactField("email", "real@example.com"),
+    ]
+    _sanitize_contact_fields(contact)
+    assert len(contact.phones) == 1
+    assert contact.phones[0] == "+41791234567"
+    assert len(contact.emails) == 1
+
+
+def test_vobject_path_rejects_base64_in_tel():
+    """Even if vobject puts base64 in tel_list, parse_vcard must reject it.
+
+    This simulates the actual bug: vobject silently mis-parses PHOTO
+    continuation lines and populates tel_list with base64 data.
+    """
+    # Create a real base64 photo blob (>200 chars)
+    fake_photo = base64.b64encode(b"\xff\xd8\xff\xe0" * 100).decode("ascii")
+
+    # Build a vCard where the PHOTO is properly formatted but long.
+    # We add a TEL with the base64 value directly to test the validation layer
+    # (we can't force vobject to mis-parse, but we can test the post-parse filter)
+    vcard_text = (
+        "BEGIN:VCARD\n"
+        "VERSION:3.0\n"
+        "FN:Test Contact\n"
+        "N:Contact;Test;;;\n"
+        "TEL:+41791234567\n"
+        "EMAIL:test@example.com\n"
+        "END:VCARD\n"
+    )
+    contact = parse_vcard(vcard_text)
+    assert contact is not None
+
+    # Simulate what vobject does wrong: inject base64 into tel field
+    contact.fields.append(ContactField("tel", fake_photo))
+    _sanitize_contact_fields(contact)
+
+    # The real phone should survive, the fake should be gone
+    assert len(contact.phones) == 1
+    assert contact.phones[0] == "+41791234567"
+
+
+def test_roundtrip_export_import_no_photo_bleed():
+    """Roundtrip test: export a contact with photo, re-import, verify no bleed.
+
+    This is the critical end-to-end test: write a vCard with PHOTO,
+    read it back, and confirm no base64 data ends up in tel/email fields.
+    """
+    from schnabel.export import contact_to_vcard
+    from schnabel.model import Photo
+
+    # Create a contact with photo + real fields
+    contact = Contact(
+        fn="Regula Bochsler",
+        family_name="Bochsler",
+        given_name="Regula",
+    )
+    contact.fields = [
+        ContactField("tel", "+41791234567"),
+        ContactField("email", "regula@example.com"),
+    ]
+    # Create a fake but realistic-size photo (4KB of JPEG-like data)
+    photo_data = b"\xff\xd8\xff\xe0" + b"\x00" * 4000 + b"\xff\xd9"
+    contact.photos = [Photo(
+        photo_data=photo_data,
+        photo_format="JPEG",
+        byte_hash="fakehash",
+    )]
+
+    # Export to VCF string
+    vcard_str = contact_to_vcard(contact)
+
+    # Verify export looks reasonable
+    assert "PHOTO;ENCODING=b;TYPE=JPEG:" in vcard_str
+    assert "TEL:" in vcard_str
+    assert "EMAIL:" in vcard_str
+
+    # Write to temp file and re-import
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".vcf", delete=False,
+                                      encoding="utf-8") as f:
+        f.write(vcard_str)
+        tmp_path = Path(f.name)
+
+    try:
+        contacts, _enc = parse_vcf_file(tmp_path)
+        assert len(contacts) == 1
+        reimported = contacts[0]
+
+        # The critical assertions: no photo data in text fields
+        assert len(reimported.phones) == 1, (
+            f"Expected 1 phone, got {len(reimported.phones)}: "
+            f"{[p[:50] for p in reimported.phones]}"
+        )
+        # Export formats Swiss numbers to national format
+        assert "79" in reimported.phones[0] and "123" in reimported.phones[0]
+
+        assert len(reimported.emails) == 1, (
+            f"Expected 1 email, got {len(reimported.emails)}: "
+            f"{[e[:50] for e in reimported.emails]}"
+        )
+        assert reimported.emails[0] == "regula@example.com"
+
+        # No field should be longer than 300 chars
+        for field in reimported.fields:
+            assert len(field.field_value) < 300, (
+                f"Field {field.field_type} has suspiciously long value "
+                f"({len(field.field_value)} chars): {field.field_value[:80]}..."
+            )
+    finally:
+        tmp_path.unlink()
+
+
+def test_roundtrip_large_photo_no_bleed():
+    """Roundtrip with a large photo (40KB+) — the size that triggered the original bug."""
+    from schnabel.export import contact_to_vcard
+    from schnabel.model import Photo
+
+    contact = Contact(
+        fn="Laura Thaqi",
+        family_name="Thaqi",
+        given_name="Laura",
+    )
+    contact.fields = [
+        ContactField("tel", "+41761234567"),
+        ContactField("tel", "+41441234567"),
+        ContactField("email", "laura@example.com"),
+    ]
+    # Large photo: 40KB — this is what caused the original 6084pt table cell
+    photo_data = b"\xff\xd8\xff\xe0" + bytes(range(256)) * 160 + b"\xff\xd9"
+    contact.photos = [Photo(
+        photo_data=photo_data,
+        photo_format="JPEG",
+        byte_hash="fakehash2",
+    )]
+
+    vcard_str = contact_to_vcard(contact)
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".vcf", delete=False,
+                                      encoding="utf-8") as f:
+        f.write(vcard_str)
+        tmp_path = Path(f.name)
+
+    try:
+        contacts, _enc = parse_vcf_file(tmp_path)
+        assert len(contacts) == 1
+        reimported = contacts[0]
+
+        assert len(reimported.phones) == 2, (
+            f"Expected 2 phones, got {len(reimported.phones)}"
+        )
+        assert len(reimported.emails) == 1
+
+        for field in reimported.fields:
+            assert len(field.field_value) < 300, (
+                f"Field {field.field_type} corrupted: {len(field.field_value)} chars"
+            )
+    finally:
+        tmp_path.unlink()
