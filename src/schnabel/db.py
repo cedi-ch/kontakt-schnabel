@@ -434,31 +434,69 @@ class Database:
 
         Updates contact references so that pairs involving the absorbed contact
         now point to the survivor. Removes duplicates and self-pairs.
+
+        Uses a safe delete-then-skip approach to avoid UNIQUE constraint
+        violations when the target pair already exists.
         """
-        # Update pairs where old_id is contact_a
+        # First: delete self-pairs that would result from reassignment
+        self.conn.execute(
+            """DELETE FROM similarity_pairs
+               WHERE resolution = 'pending'
+               AND ((contact_a_id = ? AND contact_b_id = ?)
+                 OR (contact_a_id = ? AND contact_b_id = ?))""",
+            (old_id, new_id, new_id, old_id),
+        )
+
+        # Delete pending pairs involving old_id where the equivalent pair
+        # with new_id already exists (to avoid UNIQUE violations on UPDATE)
+        self.conn.execute(
+            """DELETE FROM similarity_pairs
+               WHERE resolution = 'pending' AND contact_a_id = ?
+               AND contact_b_id IN (
+                   SELECT contact_b_id FROM similarity_pairs
+                   WHERE contact_a_id = ?
+               )""",
+            (old_id, new_id),
+        )
+        self.conn.execute(
+            """DELETE FROM similarity_pairs
+               WHERE resolution = 'pending' AND contact_b_id = ?
+               AND contact_a_id IN (
+                   SELECT contact_a_id FROM similarity_pairs
+                   WHERE contact_b_id = ?
+               )""",
+            (old_id, new_id),
+        )
+
+        # Now safely update remaining pairs
         self.conn.execute(
             """UPDATE similarity_pairs SET contact_a_id = ?
                WHERE contact_a_id = ? AND resolution = 'pending'""",
             (new_id, old_id),
         )
-        # Update pairs where old_id is contact_b
         self.conn.execute(
             """UPDATE similarity_pairs SET contact_b_id = ?
                WHERE contact_b_id = ? AND resolution = 'pending'""",
             (new_id, old_id),
         )
-        # Remove self-pairs (where both sides now point to survivor)
+
+        # Remove any self-pairs that slipped through
         self.conn.execute(
-            """DELETE FROM similarity_pairs
-               WHERE contact_a_id = contact_b_id""",
+            "DELETE FROM similarity_pairs WHERE contact_a_id = contact_b_id",
         )
+
         # Normalize: ensure contact_a_id < contact_b_id
         self.conn.execute(
-            """UPDATE similarity_pairs
+            """UPDATE OR IGNORE similarity_pairs
                SET contact_a_id = contact_b_id, contact_b_id = contact_a_id
                WHERE contact_a_id > contact_b_id""",
         )
-        # Remove duplicates — keep the row with the highest confidence per pair
+        # Clean up rows that couldn't be normalized (duplicates after swap)
+        self.conn.execute(
+            """DELETE FROM similarity_pairs WHERE contact_a_id > contact_b_id""",
+        )
+
+        # Final dedup — keep highest confidence per pair
         self.conn.execute(
             """DELETE FROM similarity_pairs
                WHERE id NOT IN (

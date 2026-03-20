@@ -22,7 +22,19 @@ def get_db(db_path: Path) -> "Database":
 @click.option("--no-export", is_flag=True, help="Skip automatic VCF export after data changes.")
 @click.pass_context
 def cli(ctx, db_path, no_export):
-    """kontakt-schnabel: merge, deduplicate, and sanitize vCard files."""
+    """kontakt-schnabel: merge, deduplicate, and sanitize vCard files.
+
+    \b
+    Pipeline order:
+      1. import      Import VCF files into database
+      2. analyze     Review what you have (optional)
+      3. normalize   Normalize emails, phones, names for matching
+      4. sanitize    Deduplicate fields within each contact
+      5. match       Find duplicate candidate pairs
+      6. dedup       Auto-merge + interactive review
+      7. categorize  Assign categories (optional)
+      8. export      Export clean vCard 3.0 files
+    """
     ctx.ensure_object(dict)
     ctx.obj["db_path"] = Path(db_path)
     ctx.obj["no_export"] = no_export
