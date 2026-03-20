@@ -311,6 +311,24 @@ class Database:
              photo.perceptual_hash, photo.width, photo.height),
         )
 
+    def remove_photo_by_hash(self, contact_id: int, byte_hash: str):
+        """Remove a photo from a contact by byte_hash (for merge undo)."""
+        row = self.conn.execute(
+            "SELECT id FROM photos WHERE contact_id = ? AND byte_hash = ? LIMIT 1",
+            (contact_id, byte_hash),
+        ).fetchone()
+        if row:
+            self.conn.execute("DELETE FROM photos WHERE id = ?", (row["id"],))
+
+    def remove_latest_photo(self, contact_id: int):
+        """Remove the most recently added photo (highest id) for a contact."""
+        row = self.conn.execute(
+            "SELECT id FROM photos WHERE contact_id = ? ORDER BY id DESC LIMIT 1",
+            (contact_id,),
+        ).fetchone()
+        if row:
+            self.conn.execute("DELETE FROM photos WHERE id = ?", (row["id"],))
+
     def update_contact_name(self, contact_id: int, fn: str, family_name: str, given_name: str):
         self.conn.execute(
             "UPDATE contacts SET fn = ?, family_name = ?, given_name = ? WHERE id = ?",
@@ -440,12 +458,17 @@ class Database:
                SET contact_a_id = contact_b_id, contact_b_id = contact_a_id
                WHERE contact_a_id > contact_b_id""",
         )
-        # Remove duplicates (keep highest confidence)
+        # Remove duplicates — keep the row with the highest confidence per pair
         self.conn.execute(
             """DELETE FROM similarity_pairs
                WHERE id NOT IN (
-                   SELECT MIN(id) FROM similarity_pairs
-                   GROUP BY contact_a_id, contact_b_id
+                   SELECT id FROM (
+                       SELECT id, ROW_NUMBER() OVER (
+                           PARTITION BY contact_a_id, contact_b_id
+                           ORDER BY confidence DESC, id ASC
+                       ) as rn
+                       FROM similarity_pairs
+                   ) WHERE rn = 1
                )""",
         )
 

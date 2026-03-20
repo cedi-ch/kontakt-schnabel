@@ -180,7 +180,8 @@ def contact_to_vcard(contact: Contact) -> str:
             key = cv.lower()
             if key not in seen_cats:
                 seen_cats[key] = cv
-        lines.append(f"CATEGORIES:{','.join(seen_cats.values())}")
+        escaped_cats = [_escape_vcard_value(c) for c in seen_cats.values()]
+        lines.append(f"CATEGORIES:{','.join(escaped_cats)}")
 
     # Photo
     for photo in contact.photos:
@@ -426,7 +427,7 @@ def extract_photos(db: Database, output_dir: Path) -> int:
             if ext == "jpeg":
                 ext = "jpg"
             suffix = f"_{i+1}" if i > 0 else ""
-            filename = f"{name}{suffix}.{ext}"
+            filename = f"{name}_{contact.id}{suffix}.{ext}"
             (output_dir / filename).write_bytes(photo.photo_data)
             count += 1
 

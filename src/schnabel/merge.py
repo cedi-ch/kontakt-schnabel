@@ -49,7 +49,12 @@ def merge_contacts(db: Database, survivor_id: int, absorbed_id: int,
     if not survivor or not absorbed:
         raise ValueError(f"Contact not found: {survivor_id} or {absorbed_id}")
 
-    fields_added = {"emails": [], "phones": [], "fields": [], "photos": 0, "name_updated": False}
+    fields_added = {
+        "emails": [], "phones": [], "fields": [],
+        "photos": [],  # list of byte_hashes
+        "name_updated": False,
+        "original_name": None,  # (fn, family_name, given_name) before name adoption
+    }
 
     # Union emails
     existing_emails = {e.lower() for e in survivor.emails}
@@ -96,10 +101,11 @@ def merge_contacts(db: Database, survivor_id: int, absorbed_id: int,
         if p.byte_hash and p.byte_hash in existing_hashes:
             continue  # duplicate photo, skip
         db.add_photo(survivor_id, p)
-        fields_added["photos"] += 1
+        fields_added["photos"].append(p.byte_hash or "")
 
     # Name: prefer the more complete structured name
     if not survivor.has_structured_name and absorbed.has_structured_name:
+        fields_added["original_name"] = [survivor.fn, survivor.family_name, survivor.given_name]
         db.update_contact_name(
             survivor_id, absorbed.fn or survivor.fn,
             absorbed.family_name, absorbed.given_name,
@@ -142,19 +148,24 @@ def undo_merge(db: Database, merge_id: int) -> bool:
             ftype, fvalue = field_str.split("=", 1)
             db.remove_contact_field_by_value(survivor_id, ftype, fvalue)
 
-    # Remove photos that were added
-    if fields_added.get("photos", 0) > 0:
-        # We can't identify exactly which photos, but we tracked the count
-        # For now, this is a known limitation
+    # Remove photos that were added (by byte_hash)
+    photo_hashes = fields_added.get("photos", [])
+    if isinstance(photo_hashes, int):
+        # Legacy format (just a count) — can't undo
         pass
+    elif photo_hashes:
+        for bhash in photo_hashes:
+            if bhash:
+                db.remove_photo_by_hash(survivor_id, bhash)
+            else:
+                # Photo without hash — remove the most recently added photo
+                db.remove_latest_photo(survivor_id)
 
     # Revert name if it was updated
     if fields_added.get("name_updated"):
-        absorbed = db.get_contact(merge["absorbed_id"])
-        if absorbed:
-            # Restore survivor's original name by clearing the adopted name
-            # The absorbed contact still has its original name
-            pass
+        original = fields_added.get("original_name")
+        if original and len(original) == 3:
+            db.update_contact_name(survivor_id, original[0], original[1], original[2])
 
     db.reactivate_contact(merge["absorbed_id"])
     db.delete_merge(merge_id)

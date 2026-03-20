@@ -479,6 +479,11 @@ def sanitize_contacts(db: Database, progress_callback=None) -> SanitizeReport:
                     else:
                         seen_text[key] = fid
 
+        # Reload contact after dedup steps (field list is stale)
+        contact = db.get_contact(cid)
+        if not contact:
+            continue
+
         # Step 7: BDAY normalize
         bday_fields = [(f.id, f.field_value) for f in contact.fields if f.field_type == "bday"]
         for fid, val in bday_fields:
@@ -494,7 +499,13 @@ def sanitize_contacts(db: Database, progress_callback=None) -> SanitizeReport:
                 result.field_id = fid
                 report.ambiguous_bdays.append(result)
 
-        # Step 8: Auto-detect phone TYPE for Swiss numbers
+        # Step 8: Repair broken N fields
+        repaired = repair_n_field(contact.family_name, contact.given_name, contact.fn)
+        if repaired:
+            new_family, new_given, new_fn = repaired
+            db.update_contact_name(cid, new_fn, new_family, new_given)
+
+        # Step 9: Auto-detect phone TYPE for Swiss numbers
         for f in contact.fields:
             if f.field_type != "tel":
                 continue

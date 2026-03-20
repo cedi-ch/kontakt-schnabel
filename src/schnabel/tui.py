@@ -375,7 +375,7 @@ def _add_dedup_field(db: Database, contact_a, contact_b):
 
 def _rescore_pair(db: Database, pair: dict) -> float:
     """Recalculate confidence score for a pair after field edits."""
-    from schnabel.compare import score_contacts
+    from schnabel.match import score_contacts
     a = db.get_contact(pair["contact_a_id"])
     b = db.get_contact(pair["contact_b_id"])
     if not a or not b:

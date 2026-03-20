@@ -553,6 +553,7 @@ def run_split_tui(contacts: list[Contact], targets: list[SplitTarget],
             idx = i
             break
 
+    key = None
     while idx < len(contacts):
         # Skip deleted contacts
         if idx in deleted:

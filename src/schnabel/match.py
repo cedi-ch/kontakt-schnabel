@@ -47,16 +47,17 @@ def find_candidate_pairs(db: Database) -> set[tuple[int, int]]:
     return candidates
 
 
-def score_pair(db: Database, a_id: int, b_id: int) -> dict:
-    """Score a candidate pair on multiple dimensions."""
-    contact_a = db.get_contact(a_id)
-    contact_b = db.get_contact(b_id)
-    if not contact_a or not contact_b:
-        return {"confidence": 0.0}
+def score_contacts(a, b) -> dict:
+    """Score two Contact objects on multiple dimensions.
+
+    This is the single source of truth for contact scoring — used by both
+    match.score_pair (DB-backed) and compare.score_contacts.
+    """
+    from schnabel.model import Contact
 
     # -- Email score --
-    emails_a = {normalize_email(e) for e in contact_a.emails}
-    emails_b = {normalize_email(e) for e in contact_b.emails}
+    emails_a = {normalize_email(e) for e in a.emails}
+    emails_b = {normalize_email(e) for e in b.emails}
     email_score = 0.0
     has_shared_email = False
     if emails_a and emails_b:
@@ -65,7 +66,6 @@ def score_pair(db: Database, a_id: int, b_id: int) -> dict:
             email_score = 1.0
             has_shared_email = True
         else:
-            # Check domain-only match (non-generic domains)
             generic_domains = {"gmail.com", "yahoo.com", "hotmail.com", "outlook.com",
                                "gmx.ch", "gmx.net", "gmx.de", "bluewin.ch", "protonmail.com",
                                "icloud.com", "me.com", "live.com", "aol.com", "mail.com"}
@@ -78,7 +78,7 @@ def score_pair(db: Database, a_id: int, b_id: int) -> dict:
     # -- Phone score --
     phones_a_e164 = set()
     phones_a_last7 = set()
-    for p in contact_a.phones:
+    for p in a.phones:
         e164 = normalize_phone(p)
         if e164:
             phones_a_e164.add(e164)
@@ -88,7 +88,7 @@ def score_pair(db: Database, a_id: int, b_id: int) -> dict:
 
     phones_b_e164 = set()
     phones_b_last7 = set()
-    for p in contact_b.phones:
+    for p in b.phones:
         e164 = normalize_phone(p)
         if e164:
             phones_b_e164.add(e164)
@@ -108,12 +108,12 @@ def score_pair(db: Database, a_id: int, b_id: int) -> dict:
             has_shared_phone = True
 
     # -- Name score --
-    name_a = name_simplified(contact_a)
-    name_b = name_simplified(contact_b)
-    if not name_a and contact_a.fn:
-        name_a = fn_simplified(contact_a.fn)
-    if not name_b and contact_b.fn:
-        name_b = fn_simplified(contact_b.fn)
+    name_a = name_simplified(a)
+    name_b = name_simplified(b)
+    if not name_a and a.fn:
+        name_a = fn_simplified(a.fn)
+    if not name_b and b.fn:
+        name_b = fn_simplified(b.fn)
 
     name_score = 0.0
     if name_a and name_b:
@@ -123,16 +123,14 @@ def score_pair(db: Database, a_id: int, b_id: int) -> dict:
 
     # -- Photo score --
     photo_score = 0.0
-    if contact_a.photos and contact_b.photos:
-        # Byte-hash exact match
-        hashes_a = {p.byte_hash for p in contact_a.photos if p.byte_hash}
-        hashes_b = {p.byte_hash for p in contact_b.photos if p.byte_hash}
+    if a.photos and b.photos:
+        hashes_a = {p.byte_hash for p in a.photos if p.byte_hash}
+        hashes_b = {p.byte_hash for p in b.photos if p.byte_hash}
         if hashes_a & hashes_b:
             photo_score = 1.0
         else:
-            # Perceptual hash comparison
-            for pa in contact_a.photos:
-                for pb in contact_b.photos:
+            for pa in a.photos:
+                for pb in b.photos:
                     if pa.perceptual_hash and pb.perceptual_hash:
                         try:
                             dist = _hamming_distance(pa.perceptual_hash, pb.perceptual_hash)
@@ -145,10 +143,10 @@ def score_pair(db: Database, a_id: int, b_id: int) -> dict:
 
     # -- Address score --
     address_score = 0.0
-    if contact_a.addresses and contact_b.addresses:
+    if a.addresses and b.addresses:
         best = 0.0
-        for addr_a in contact_a.addresses:
-            for addr_b in contact_b.addresses:
+        for addr_a in a.addresses:
+            for addr_b in b.addresses:
                 sim = jellyfish.jaro_winkler_similarity(addr_a.lower(), addr_b.lower())
                 best = max(best, sim)
         address_score = best
@@ -176,7 +174,6 @@ def score_pair(db: Database, a_id: int, b_id: int) -> dict:
 
     if name_only:
         if name_score >= 0.98:
-            # Near-identical names (same person across source files) — allow auto-merge
             confidence = max(confidence, 0.80)
         else:
             confidence = min(confidence, ANCHOR_MAX_NAME_ONLY)
@@ -191,6 +188,15 @@ def score_pair(db: Database, a_id: int, b_id: int) -> dict:
         "has_shared_email": has_shared_email,
         "has_shared_phone": has_shared_phone,
     }
+
+
+def score_pair(db: Database, a_id: int, b_id: int) -> dict:
+    """Score a candidate pair by loading contacts from DB."""
+    contact_a = db.get_contact(a_id)
+    contact_b = db.get_contact(b_id)
+    if not contact_a or not contact_b:
+        return {"confidence": 0.0}
+    return score_contacts(contact_a, contact_b)
 
 
 def _hamming_distance(hash1: str, hash2: str) -> int:

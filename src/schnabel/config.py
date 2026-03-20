@@ -30,7 +30,7 @@ PHOTO_MAX_SIZE = 400
 PHOTO_JPEG_QUALITY = 85
 
 # Encoding fallback chain for vCard files
-ENCODING_CHAIN = ["utf-8", "utf-8-sig", "iso-8859-1", "cp1252", "utf-16"]
+ENCODING_CHAIN = ["utf-8", "utf-8-sig", "utf-16", "iso-8859-1", "cp1252"]
 
 # Spam indicators in email addresses
 SPAM_LOCAL_PARTS = {

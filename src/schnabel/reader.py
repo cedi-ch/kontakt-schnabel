@@ -483,8 +483,17 @@ def parse_vcard(vcard_text: str, source_file: str = "") -> Contact | None:
             if value:
                 contact.fields.append(ContactField("adr", value, params))
 
-    # ORG
-    if hasattr(vcard, "org"):
+    # ORG (may appear multiple times)
+    if hasattr(vcard, "org_list"):
+        for org in vcard.org_list:
+            org_val = org.value
+            if isinstance(org_val, list):
+                org_str = ";".join(org_val).strip(";").strip()
+            else:
+                org_str = str(org_val).strip()
+            if org_str:
+                contact.fields.append(ContactField("org", org_str))
+    elif hasattr(vcard, "org"):
         org_val = vcard.org.value
         if isinstance(org_val, list):
             org_str = ";".join(org_val).strip(";").strip()
@@ -493,20 +502,35 @@ def parse_vcard(vcard_text: str, source_file: str = "") -> Contact | None:
         if org_str:
             contact.fields.append(ContactField("org", org_str))
 
-    # TITLE
-    if hasattr(vcard, "title"):
+    # TITLE (may appear multiple times)
+    if hasattr(vcard, "title_list"):
+        for title_obj in vcard.title_list:
+            title = title_obj.value.strip()
+            if title:
+                contact.fields.append(ContactField("title", title))
+    elif hasattr(vcard, "title"):
         title = vcard.title.value.strip()
         if title:
             contact.fields.append(ContactField("title", title))
 
-    # NOTE
-    if hasattr(vcard, "note"):
+    # NOTE (may appear multiple times)
+    if hasattr(vcard, "note_list"):
+        for note_obj in vcard.note_list:
+            note = note_obj.value.strip()
+            if note:
+                contact.fields.append(ContactField("note", note))
+    elif hasattr(vcard, "note"):
         note = vcard.note.value.strip()
         if note:
             contact.fields.append(ContactField("note", note))
 
-    # URL
-    if hasattr(vcard, "url"):
+    # URL (may appear multiple times)
+    if hasattr(vcard, "url_list"):
+        for url_obj in vcard.url_list:
+            url = url_obj.value.strip()
+            if url:
+                contact.fields.append(ContactField("url", url))
+    elif hasattr(vcard, "url"):
         url = vcard.url.value.strip()
         if url:
             contact.fields.append(ContactField("url", url))
@@ -521,9 +545,14 @@ def parse_vcard(vcard_text: str, source_file: str = "") -> Contact | None:
         if bday_str:
             contact.fields.append(ContactField("bday", bday_str))
 
-    # CATEGORIES
-    if hasattr(vcard, "categories"):
-        cats = vcard.categories.value
+    # CATEGORIES (may have multiple CATEGORIES lines)
+    cat_sources = []
+    if hasattr(vcard, "categories_list"):
+        cat_sources = vcard.categories_list
+    elif hasattr(vcard, "categories"):
+        cat_sources = [vcard.categories]
+    for cat_obj in cat_sources:
+        cats = cat_obj.value
         if isinstance(cats, list):
             for cat in cats:
                 cat = cat.strip()
