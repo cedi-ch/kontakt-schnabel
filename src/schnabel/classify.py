@@ -11,14 +11,19 @@ def is_spam_email(email: str) -> bool:
         return False
 
     local, domain = email.rsplit("@", 1)
-    local = local.replace(".", "").replace("-", "").replace("_", "")
 
     if domain in SPAM_DOMAINS:
         return True
 
+    # Word-boundary matching: normalize separators, then check if local part
+    # exactly matches a spam pattern. This avoids false positives where a
+    # real name happens to contain a spam word (e.g. "no.reply.peter" or "info.mueller").
+    local_normalized = local.replace(".", "-").replace("_", "-")
+
     for spam_part in SPAM_LOCAL_PARTS:
-        clean = spam_part.replace("-", "").replace("_", "")
-        if local == clean or local.startswith(clean):
+        spam_normalized = spam_part.replace(".", "-").replace("_", "-")
+        # Exact match
+        if local_normalized == spam_normalized:
             return True
 
     return False

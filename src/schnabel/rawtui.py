@@ -60,9 +60,8 @@ def _confidence_stars(confidence: str) -> Text:
 
 
 def _truncate(s: str, maxlen: int = 50) -> str:
-    if len(s) <= maxlen:
-        return s
-    return s[: maxlen - 1] + "\u2026"
+    from schnabel.ui_helpers import truncate
+    return truncate(s, maxlen)
 
 
 def _render_contact(contact: ParsedContact, idx: int, total: int,

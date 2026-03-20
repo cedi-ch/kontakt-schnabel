@@ -279,7 +279,7 @@ def test_roundtrip_export_import_no_photo_bleed():
     vcard_str = contact_to_vcard(contact)
 
     # Verify export looks reasonable
-    assert "PHOTO;ENCODING=b;TYPE=JPEG:" in vcard_str
+    assert "PHOTO;ENCODING=BASE64;TYPE=JPEG:" in vcard_str
     assert "TEL:" in vcard_str
     assert "EMAIL:" in vcard_str
 

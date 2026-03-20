@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS contacts (
     additional_names TEXT NOT NULL DEFAULT '',
     prefix TEXT NOT NULL DEFAULT '',
     suffix TEXT NOT NULL DEFAULT '',
+    uid TEXT NOT NULL DEFAULT '',
     source_import_id INTEGER REFERENCES import_sources(id),
     raw_vcard TEXT NOT NULL DEFAULT '',
     merged_into_id INTEGER REFERENCES contacts(id),
@@ -34,7 +35,7 @@ CREATE TABLE IF NOT EXISTS contacts (
 
 CREATE TABLE IF NOT EXISTS contact_fields (
     id INTEGER PRIMARY KEY,
-    contact_id INTEGER NOT NULL REFERENCES contacts(id),
+    contact_id INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
     field_type TEXT NOT NULL,
     field_value TEXT NOT NULL DEFAULT '',
     field_params TEXT NOT NULL DEFAULT '{}'
@@ -42,7 +43,7 @@ CREATE TABLE IF NOT EXISTS contact_fields (
 
 CREATE TABLE IF NOT EXISTS photos (
     id INTEGER PRIMARY KEY,
-    contact_id INTEGER NOT NULL REFERENCES contacts(id),
+    contact_id INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
     photo_data BLOB NOT NULL,
     photo_format TEXT NOT NULL DEFAULT 'JPEG',
     byte_hash TEXT NOT NULL DEFAULT '',
@@ -54,7 +55,7 @@ CREATE TABLE IF NOT EXISTS photos (
 
 CREATE TABLE IF NOT EXISTS contact_normalized (
     id INTEGER PRIMARY KEY,
-    contact_id INTEGER NOT NULL REFERENCES contacts(id),
+    contact_id INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
     norm_type TEXT NOT NULL,
     norm_value TEXT NOT NULL DEFAULT ''
 );
@@ -69,7 +70,8 @@ CREATE TABLE IF NOT EXISTS similarity_pairs (
     name_score REAL NOT NULL DEFAULT 0.0,
     photo_score REAL NOT NULL DEFAULT 0.0,
     address_score REAL NOT NULL DEFAULT 0.0,
-    resolution TEXT NOT NULL DEFAULT 'pending',
+    resolution TEXT NOT NULL DEFAULT 'pending'
+        CHECK(resolution IN ('pending', 'auto_merged', 'manual_merged', 'not_dup', 'skipped')),
     UNIQUE(contact_a_id, contact_b_id)
 );
 
@@ -117,9 +119,27 @@ class Database:
     def _init_schema(self):
         self.conn.executescript(SCHEMA)
         self.conn.commit()
+        # Migration: add uid column if missing (existing DBs)
+        try:
+            self.conn.execute("SELECT uid FROM contacts LIMIT 0")
+        except sqlite3.OperationalError:
+            self.conn.execute("ALTER TABLE contacts ADD COLUMN uid TEXT NOT NULL DEFAULT ''")
+            self.conn.commit()
 
     def close(self):
         self.conn.close()
+
+    def create_backup(self, suffix: str = "") -> Path:
+        """Create a backup of the database file using SQLite's backup API.
+
+        Returns the path to the backup file.
+        """
+        backup_name = f"{self.db_path.stem}_backup{('_' + suffix) if suffix else ''}{self.db_path.suffix}"
+        backup_path = self.db_path.parent / backup_name
+        backup_conn = sqlite3.connect(str(backup_path))
+        self.conn.backup(backup_conn)
+        backup_conn.close()
+        return backup_path
 
     # -- Import sources --
 
@@ -148,8 +168,8 @@ class Database:
         cur = self.conn.execute(
             """INSERT INTO contacts
                (category, fn, family_name, given_name, additional_names,
-                prefix, suffix, source_import_id, raw_vcard, is_active)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                prefix, suffix, uid, source_import_id, raw_vcard, is_active)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 contact.category,
                 contact.fn,
@@ -158,6 +178,7 @@ class Database:
                 contact.additional_names,
                 contact.prefix,
                 contact.suffix,
+                contact.uid,
                 contact.source_import_id,
                 contact.raw_vcard,
                 1 if contact.is_active else 0,
@@ -199,6 +220,7 @@ class Database:
             additional_names=row["additional_names"],
             prefix=row["prefix"],
             suffix=row["suffix"],
+            uid=row["uid"],
             source_import_id=row["source_import_id"],
             raw_vcard=row["raw_vcard"],
             merged_into_id=row["merged_into_id"],
@@ -301,11 +323,26 @@ class Database:
             (field_value, field_id),
         )
 
+    def update_contact_field_params(self, field_id: int, field_params: dict):
+        self.conn.execute(
+            "UPDATE contact_fields SET field_params = ? WHERE id = ?",
+            (json.dumps(field_params), field_id),
+        )
+
     def delete_contact_field(self, field_id: int):
         self.conn.execute(
             "DELETE FROM contact_fields WHERE id = ?",
             (field_id,),
         )
+
+    def remove_contact_field_by_value(self, contact_id: int, field_type: str, field_value: str):
+        """Remove a specific field by contact_id, type, and value (for merge undo)."""
+        row = self.conn.execute(
+            "SELECT id FROM contact_fields WHERE contact_id = ? AND field_type = ? AND field_value = ? LIMIT 1",
+            (contact_id, field_type, field_value),
+        ).fetchone()
+        if row:
+            self.conn.execute("DELETE FROM contact_fields WHERE id = ?", (row["id"],))
 
     # -- Normalized values --
 
@@ -377,14 +414,39 @@ class Database:
     def reassign_pairs(self, old_id: int, new_id: int):
         """Reassign similarity pairs from absorbed contact to survivor.
 
-        Simply removes all pending pairs involving the absorbed contact.
-        The survivor already has its own pairs from the matching phase.
+        Updates contact references so that pairs involving the absorbed contact
+        now point to the survivor. Removes duplicates and self-pairs.
         """
+        # Update pairs where old_id is contact_a
+        self.conn.execute(
+            """UPDATE similarity_pairs SET contact_a_id = ?
+               WHERE contact_a_id = ? AND resolution = 'pending'""",
+            (new_id, old_id),
+        )
+        # Update pairs where old_id is contact_b
+        self.conn.execute(
+            """UPDATE similarity_pairs SET contact_b_id = ?
+               WHERE contact_b_id = ? AND resolution = 'pending'""",
+            (new_id, old_id),
+        )
+        # Remove self-pairs (where both sides now point to survivor)
         self.conn.execute(
             """DELETE FROM similarity_pairs
-               WHERE resolution = 'pending'
-               AND (contact_a_id = ? OR contact_b_id = ?)""",
-            (old_id, old_id),
+               WHERE contact_a_id = contact_b_id""",
+        )
+        # Normalize: ensure contact_a_id < contact_b_id
+        self.conn.execute(
+            """UPDATE similarity_pairs
+               SET contact_a_id = contact_b_id, contact_b_id = contact_a_id
+               WHERE contact_a_id > contact_b_id""",
+        )
+        # Remove duplicates (keep highest confidence)
+        self.conn.execute(
+            """DELETE FROM similarity_pairs
+               WHERE id NOT IN (
+                   SELECT MIN(id) FROM similarity_pairs
+                   GROUP BY contact_a_id, contact_b_id
+               )""",
         )
 
     # -- Merge history --

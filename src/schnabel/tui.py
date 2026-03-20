@@ -11,6 +11,7 @@ from schnabel.db import Database
 from schnabel.merge import determine_survivor, merge_contacts, undo_merge
 from schnabel.model import ContactField
 from schnabel.normalize import normalize_email, normalize_phone
+from schnabel.ui_helpers import truncate as _truncate, confidence_bar as _confidence_bar, safe_readchar
 
 
 console = Console()
@@ -59,29 +60,8 @@ def _compare_symbol(val_a: str, val_b: str, norm_a: str = "", norm_b: str = "") 
     return "≠"
 
 
-def _truncate(s: str, maxlen: int = 30) -> str:
-    if len(s) <= maxlen:
-        return s
-    return s[:maxlen - 1] + "…"
 
-
-def _confidence_bar(confidence: float, width: int = 25) -> Text:
-    filled = int(confidence * width)
-    empty = width - filled
-    pct = f"{confidence * 100:.0f}%"
-
-    if confidence >= 0.9:
-        color = "green"
-    elif confidence >= 0.7:
-        color = "yellow"
-    else:
-        color = "red"
-
-    bar = Text()
-    bar.append("█" * filled, style=color)
-    bar.append("░" * empty, style="dim")
-    bar.append(f" {pct}", style=f"bold {color}")
-    return bar
+# _truncate and _confidence_bar imported from ui_helpers
 
 
 def _get_source_name(source_file: str) -> str:
@@ -393,6 +373,17 @@ def _add_dedup_field(db: Database, contact_a, contact_b):
         time.sleep(0.5)
 
 
+def _rescore_pair(db: Database, pair: dict) -> float:
+    """Recalculate confidence score for a pair after field edits."""
+    from schnabel.compare import score_contacts
+    a = db.get_contact(pair["contact_a_id"])
+    b = db.get_contact(pair["contact_b_id"])
+    if not a or not b:
+        return pair["confidence"]
+    scores = score_contacts(a, b)
+    return scores["confidence"]
+
+
 # -- Main TUI loop --
 
 def run_tui(db: Database, auto_merged: int = 0):
@@ -557,14 +548,18 @@ def run_tui(db: Database, auto_merged: int = 0):
 
             elif key == "e":
                 _edit_dedup_field(db, contact_a, contact_b)
+                # Recalculate score after edit
+                pair["confidence"] = _rescore_pair(db, pair)
                 # stay in inner loop → re-render with updated data
 
             elif key == "d":
                 _delete_dedup_field(db, contact_a, contact_b)
+                pair["confidence"] = _rescore_pair(db, pair)
                 # stay in inner loop → re-render
 
             elif key == "+":
                 _add_dedup_field(db, contact_a, contact_b)
+                pair["confidence"] = _rescore_pair(db, pair)
                 # stay in inner loop → re-render
 
             elif key == "?":

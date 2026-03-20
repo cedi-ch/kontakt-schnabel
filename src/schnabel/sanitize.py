@@ -19,7 +19,7 @@ class SanitizeReport:
         "empty": 0, "tel": 0, "email": 0, "adr": 0, "url": 0, "text": 0,
     })
     reformatted: dict[str, int] = field(default_factory=lambda: {
-        "tel": 0, "adr": 0, "url": 0, "bday": 0,
+        "tel": 0, "adr": 0, "url": 0, "bday": 0, "type": 0,
     })
     ambiguous_bdays: list = field(default_factory=list)  # list[BdayAmbiguous]
 
@@ -107,6 +107,74 @@ def _best_phone_format(phones: list[tuple[int, str]], e164: str) -> tuple[int, s
         if len(val) > len(best[1]):
             best = (fid, val)
     return best
+
+
+def repair_n_field(family_name: str, given_name: str, fn: str) -> tuple[str, str, str] | None:
+    """Heuristic repair for broken N fields.
+
+    Detects:
+    - Parentheses in names: "Mueller (née Schmidt)" → family="Mueller", note about née
+    - Company name in family_name: "ACME GmbH" with no given_name
+    - Swapped given/family: "Mueller" as given, "Hans" as family (if FN is "Hans Mueller")
+
+    Returns (family_name, given_name, fn) if repaired, None if no repair needed.
+    """
+    # Strip parenthesized suffixes from names
+    paren_match = re.match(r'^(.+?)\s*\(.*\)\s*$', family_name)
+    if paren_match:
+        cleaned = paren_match.group(1).strip()
+        if cleaned:
+            new_fn = fn or f"{given_name} {cleaned}".strip()
+            return cleaned, given_name, new_fn
+
+    paren_match = re.match(r'^(.+?)\s*\(.*\)\s*$', given_name)
+    if paren_match:
+        cleaned = paren_match.group(1).strip()
+        if cleaned:
+            new_fn = fn or f"{cleaned} {family_name}".strip()
+            return family_name, cleaned, new_fn
+
+    # Detect swapped given/family using FN as reference
+    if fn and given_name and family_name:
+        fn_parts = fn.strip().split()
+        if len(fn_parts) == 2:
+            # FN is "Given Family" but N has them swapped
+            if fn_parts[0].lower() == family_name.lower() and fn_parts[1].lower() == given_name.lower():
+                return given_name, family_name, fn
+
+    return None
+
+
+# Swiss mobile prefixes (national format, after 0)
+_CH_MOBILE_PREFIXES = {"74", "75", "76", "77", "78", "79"}
+
+
+def auto_detect_phone_type(phone: str, region: str = DEFAULT_PHONE_REGION) -> str | None:
+    """Auto-detect TYPE for a Swiss phone number.
+
+    Returns "CELL" for mobile, "HOME" for landline, or None for
+    non-Swiss / unparseable numbers.
+    """
+    try:
+        parsed = phonenumbers.parse(phone, region)
+        if not phonenumbers.is_valid_number(parsed):
+            return None
+        country = phonenumbers.region_code_for_number(parsed)
+        if country != "CH":
+            return None
+        national = phonenumbers.format_number(
+            parsed, phonenumbers.PhoneNumberFormat.NATIONAL
+        )
+        # National format: "079 123 45 67" → prefix is digits 1-2 (after leading 0)
+        digits = national.replace(" ", "")
+        if len(digits) >= 3 and digits[0] == "0":
+            prefix = digits[1:3]
+            if prefix in _CH_MOBILE_PREFIXES:
+                return "CELL"
+            return "HOME"
+    except phonenumbers.NumberParseException:
+        pass
+    return None
 
 
 @dataclass
@@ -425,6 +493,20 @@ def sanitize_contacts(db: Database, progress_callback=None) -> SanitizeReport:
                 result.contact_fn = contact.fn
                 result.field_id = fid
                 report.ambiguous_bdays.append(result)
+
+        # Step 8: Auto-detect phone TYPE for Swiss numbers
+        for f in contact.fields:
+            if f.field_type != "tel":
+                continue
+            # Skip if TYPE is already set
+            if f.field_params.get("TYPE"):
+                continue
+            detected = auto_detect_phone_type(f.field_value)
+            if detected:
+                params = dict(f.field_params)
+                params["TYPE"] = detected
+                db.update_contact_field_params(f.id, params)
+                report.reformatted["type"] += 1
 
         db.commit()
 

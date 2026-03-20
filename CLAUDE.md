@@ -1,86 +1,43 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+## Project: kontakt-schnabel v1.0.0
 
-## Project: kontakt-schnabel
+vCard CLI tool for merging, editing, deduplicating, sanitizing, and separating contact files.
+Python, CLI + Rich TUI. Target: GrapheneOS + DAVx5 + Thunderbird + Infomaniak/mailbox.org CardDAV.
 
-A CLI tool for merging, editing, deduplicating, sanitizing, and separating vCard files.
-Written in Python. Target use: cleaning up 10+ years of messy contacts from iPhones, Android,
-Windows, Mac, Linux — for use on GrapheneOS with DAVx5, Thunderbird, and messengers.
+**Repository:** https://github.com/cedi-ch/kontakt-schnabel
 
-## Repository
+## Status: v1.0.0 — Spec-Driven Rebuild Complete
 
-https://github.com/cedi-ch/kontakt-schnabel
+All 5 phases of the spec-driven rebuild are done. 12 bugs fixed, 224 tests passing, RFC 2426 compliant export with UIDs.
 
-## Architecture
+## Phase Documents
 
-```
-src/schnabel/
-├── cli.py          # Click CLI: all commands + auto-export + session logging
-├── config.py       # Global config: weights, thresholds, encoding chain, make_output_dir()
-├── db.py           # SQLite database with similarity graph + metadata table
-├── model.py        # Contact/ContactField/Photo dataclasses
-├── reader.py       # vCard parser (vobject + regex fallback) with encoding fallback
-├── rawparse.py     # Raw text parser: extract contacts from unstructured text (subtract-and-classify pipeline)
-├── rawtui.py       # Rich + readchar TUI for reviewing raw-parsed contacts
-├── classify.py     # 3-tier classification: real / stub / spam
-├── normalize.py    # 4-stage normalization: prune → transform → normalize → simplify
-├── sanitize.py     # Within-contact field cleanup: phone/email/address/URL/text dedup
-├── match.py        # Blocking + weighted scoring with anchor rules
-├── merge.py        # Merge engine with aggressiveness parameter and undo
-├── tui.py          # Rich + readchar TUI for manual dedup review (with back navigation)
-├── splittui.py     # Rich + readchar TUI for splitting VCF files
-├── compare.py      # Cross-file contact comparison: matching + read-only diff TUI
-├── cattui.py       # Rich + readchar TUI for interactive category assignment
-└── export.py       # vCard 3.0 writer (custom, RFC 2426 compliant) + photo extraction
-```
+All planning and audit documents live in `docs/`:
 
-## Commands
-
-```bash
-source .venv/bin/activate
-schnabel import data/input/*.vcf       # Parse and classify contacts
-schnabel analyze [-v]                  # Show statistics
-schnabel normalize                     # Normalize emails, phones, names
-schnabel sanitize                      # Deduplicate fields within each contact
-schnabel match                         # Find duplicate candidate pairs
-schnabel dedup [--auto-only] [-a 0.5]  # Auto-merge + TUI review
-schnabel dedup --pending               # Resume TUI with remaining pairs
-schnabel export [DIR]                  # Export to real/stubs/spam VCF files (timestamped default)
-schnabel photos --extract ./photos/    # Extract contact photos
-schnabel status                        # Pipeline overview
-schnabel stats                         # Detailed session statistics
-schnabel reset [--confirm]             # Delete DB and start fresh
-schnabel undo <merge-id>              # Undo a merge
-schnabel rawparse FILE [-o OUT.vcf]    # Parse contacts from raw text files
-schnabel rawparse FILE --auto-accept   # Skip TUI, accept all parsed contacts
-schnabel rawparse --pending            # Resume: only skipped contacts
-schnabel rawparse FILE --db-import     # Also import into main database
-schnabel compare FILE_A FILE_B         # Compare two VCF files side-by-side (read-only diff TUI)
-schnabel compare --min-confidence 0.6 a.vcf b.vcf  # Stricter matching threshold
-schnabel split FILE [-o DIR]           # Split VCF into named target files
-schnabel split --pending               # Resume split session
-schnabel categorize                    # Interactive category assignment TUI
-schnabel categorize --uncategorized    # Only show contacts without categories
-```
-
-**Global flags:** `--db PATH` (database path), `--no-export` (skip auto-export after data changes)
+| File | Content |
+|------|---------|
+| `docs/architecture-legacy.md` | Original architecture reference (pre-restart) |
+| `docs/01-audit.md` | Full codebase audit: 38 bugs, git history analysis, test coverage |
+| `docs/02-spec.md` | Spec-driven development — requirements + test definitions |
+| `docs/03-gap-analysis.md` | Current capabilities vs spec |
+| `docs/04-plan.md` | Implementation plan (5 steps) |
+| `docs/05-execution.md` | Execution log |
 
 ## Development
 
 ```bash
-python -m pytest tests/ -v          # Run tests
+source .venv/bin/activate
+python -m pytest tests/ -v
 ```
 
-## Key Design Decisions
+## Key Rules
 
-- **similarity_pairs** table stores per-pair float confidence scores (0.0–1.0), enabling the aggressiveness parameter to control auto-merge threshold
-- Aggressiveness 0.0–1.0 maps to threshold 0.95–0.50
-- Anchor rules: shared email/phone → min 0.70; both → min 0.95; name-only → max 0.60
-- vobject for parsing with regex fallback for malformed cards
-- Custom writer for export (no vobject serialization)
 - Data files in `data/` and `input/` are gitignored (personal contacts)
-- Auto-export after data-changing commands (import, normalize, sanitize, dedup) — disable with `--no-export`
-- Timestamped output directories: `output/YYYY-MM-DD_HHMM_command/`
-- Session log at `output/schnabel.log`
-- State files at stable paths: `output/.rawparse_state.json`, `output/.split_state.json`
+- Output in `output/` is gitignored
+- Never trust vobject output without post-parse validation
+- All vCard export MUST pass roundtrip test (export -> re-import -> compare)
+- RFC 2426 compliance is non-negotiable for the export writer
+- Phone comparison must use E.164 normalization, not string matching
+- UIDs must be preserved on roundtrip; generated as UUID v4 when missing
+- Merge undo must remove fields that were added to the survivor

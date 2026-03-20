@@ -372,20 +372,47 @@ def undo(ctx, merge_id):
               help="Normalize photos (resize, JPEG convert). Default: normalize.")
 @click.option("--max-lines", type=int, default=0,
               help="Split output files at this line limit (e.g. 10000 for Infomaniak).")
+@click.option("--by-category", is_flag=True,
+              help="Split real contacts by CATEGORIES into separate files.")
+@click.option("--no-preview", is_flag=True,
+              help="Skip export preview and export immediately.")
 @click.pass_context
-def export(ctx, output_dir, normalize_photos, max_lines):
+def export(ctx, output_dir, normalize_photos, max_lines, by_category, no_preview):
     """Export contacts to clean vCard 3.0 files.
 
     OUTPUT_DIR is optional; if omitted, a timestamped directory is created.
     """
-    from schnabel.export import export_contacts
+    from schnabel.export import export_by_category, export_contacts, get_export_preview
 
     db = get_db(ctx.obj["db_path"])
+
+    # Preview
+    if not no_preview:
+        preview = get_export_preview(db)
+        console.print("\n[bold cyan]Export-Vorschau:[/bold cyan]")
+        console.print(f"  Echte Kontakte:     {preview['real']}"
+                      f" (davon {preview['real_with_photos']} mit Foto)")
+        if preview["categories"]:
+            for cat_name, count in sorted(preview["categories"].items()):
+                console.print(f"  - Kategorie {cat_name}: {count}")
+        if preview["uncategorized"] > 0:
+            console.print(f"  - Ohne Kategorie: {preview['uncategorized']}")
+        console.print(f"  Stubs:              {preview['stubs']}")
+        console.print(f"  Spam:               {preview['spam']}")
+
+        if by_category:
+            console.print(f"\n  [dim]Modus: nach Kategorien aufgeteilt[/dim]")
+        console.print()
+
     output_path = Path(output_dir) if output_dir else make_output_dir("export")
 
     with console.status("[bold cyan]Exporting..."):
-        counts = export_contacts(db, output_path, normalize_photos=normalize_photos,
-                                 max_lines=max_lines)
+        if by_category:
+            counts = export_by_category(db, output_path, normalize_photos=normalize_photos,
+                                        max_lines=max_lines)
+        else:
+            counts = export_contacts(db, output_path, normalize_photos=normalize_photos,
+                                     max_lines=max_lines)
 
     console.print(f"\n[bold green]Export complete → {output_path}/[/bold green]")
     for category, count in counts.items():

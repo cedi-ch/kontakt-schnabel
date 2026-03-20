@@ -1,5 +1,6 @@
 """TUI for splitting a VCF file into multiple named target files."""
 
+import base64
 import json
 import re
 import time
@@ -47,9 +48,8 @@ FIELD_LABELS = {
 
 
 def _truncate(s: str, maxlen: int = 40) -> str:
-    if len(s) <= maxlen:
-        return s
-    return s[: maxlen - 1] + "\u2026"
+    from schnabel.ui_helpers import truncate
+    return truncate(s, maxlen)
 
 
 @dataclass
@@ -67,7 +67,7 @@ def _sanitize_filename(name: str) -> str:
 
 
 def _serialize_contact(contact: Contact) -> dict:
-    """Serialize a Contact to a JSON-safe dict (without photo data)."""
+    """Serialize a Contact to a JSON-safe dict (including photo data as base64)."""
     return {
         "fn": contact.fn,
         "family_name": contact.family_name,
@@ -75,6 +75,7 @@ def _serialize_contact(contact: Contact) -> dict:
         "additional_names": contact.additional_names,
         "prefix": contact.prefix,
         "suffix": contact.suffix,
+        "uid": contact.uid,
         "fields": [
             {
                 "field_type": f.field_type,
@@ -83,15 +84,43 @@ def _serialize_contact(contact: Contact) -> dict:
             }
             for f in contact.fields
         ],
-        "photos_meta": [
-            {"photo_format": p.photo_format, "width": p.width, "height": p.height}
+        "photos": [
+            {
+                "photo_data_b64": base64.b64encode(p.photo_data).decode("ascii") if p.photo_data else "",
+                "photo_format": p.photo_format,
+                "byte_hash": p.byte_hash,
+                "width": p.width,
+                "height": p.height,
+            }
             for p in contact.photos
         ],
     }
 
 
 def _deserialize_contact(data: dict) -> Contact:
-    """Reconstruct a Contact from serialized dict (without photo data)."""
+    """Reconstruct a Contact from serialized dict (including photo data)."""
+    # Support both old format (photos_meta without data) and new format (photos with data)
+    photos = []
+    if "photos" in data:
+        for p in data["photos"]:
+            photo_data = base64.b64decode(p["photo_data_b64"]) if p.get("photo_data_b64") else b""
+            photos.append(Photo(
+                photo_data=photo_data,
+                photo_format=p["photo_format"],
+                byte_hash=p.get("byte_hash", ""),
+                width=p["width"],
+                height=p["height"],
+            ))
+    elif "photos_meta" in data:
+        # Legacy format — photos without data
+        for p in data["photos_meta"]:
+            photos.append(Photo(
+                photo_data=b"",
+                photo_format=p["photo_format"],
+                width=p["width"],
+                height=p["height"],
+            ))
+
     contact = Contact(
         fn=data["fn"],
         family_name=data["family_name"],
@@ -99,6 +128,7 @@ def _deserialize_contact(data: dict) -> Contact:
         additional_names=data.get("additional_names", ""),
         prefix=data.get("prefix", ""),
         suffix=data.get("suffix", ""),
+        uid=data.get("uid", ""),
         fields=[
             ContactField(
                 field_type=f["field_type"],
@@ -107,11 +137,7 @@ def _deserialize_contact(data: dict) -> Contact:
             )
             for f in data["fields"]
         ],
-        photos=[
-            Photo(photo_data=b"", photo_format=p["photo_format"],
-                  width=p["width"], height=p["height"])
-            for p in data.get("photos_meta", [])
-        ],
+        photos=photos,
     )
     return contact
 
@@ -128,7 +154,10 @@ def save_split_state(contacts: list[Contact], targets: list[SplitTarget],
         "contacts": [_serialize_contact(c) for c in contacts],
     }
     state_path.parent.mkdir(parents=True, exist_ok=True)
-    state_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    # Atomic write: write to temp file then rename to prevent corruption
+    tmp_path = state_path.with_suffix(".tmp")
+    tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp_path.rename(state_path)
 
 
 def load_split_state(state_path: Path) -> dict | None:

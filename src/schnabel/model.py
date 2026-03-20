@@ -34,6 +34,7 @@ class Contact:
     additional_names: str = ""
     prefix: str = ""
     suffix: str = ""
+    uid: str = ""
     source_file: str = ""
     source_import_id: int | None = None
     raw_vcard: str = ""

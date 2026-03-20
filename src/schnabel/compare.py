@@ -22,7 +22,8 @@ from schnabel.config import (
 from schnabel.match import _hamming_distance, _token_sort_ratio
 from schnabel.model import Contact
 from schnabel.normalize import normalize_email, normalize_phone, name_simplified, fn_simplified
-from schnabel.tui import _compare_symbol, _confidence_bar, _truncate
+from schnabel.tui import _compare_symbol
+from schnabel.ui_helpers import truncate as _truncate, confidence_bar as _confidence_bar
 
 console = Console()
 

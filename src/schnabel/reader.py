@@ -385,6 +385,8 @@ def _fallback_parse(vcard_text: str, source_file: str) -> Contact | None:
             val = line[4:].strip()
             if val:
                 contact.fields.append(ContactField("url", val))
+        elif upper.startswith("UID:"):
+            contact.uid = line.split(":", 1)[1].strip()
         elif upper.startswith("CATEGORIES:"):
             val = line.split(":", 1)[1].strip()
             if val:
@@ -392,6 +394,10 @@ def _fallback_parse(vcard_text: str, source_file: str) -> Contact | None:
                     cat = cat.strip()
                     if cat:
                         contact.fields.append(ContactField("categories", cat))
+        elif upper.startswith("X-ANNIVERSARY:"):
+            val = line.split(":", 1)[1].strip()
+            if val and not any(f.field_type == "bday" for f in contact.fields):
+                contact.fields.append(ContactField("bday", val))
         # PHOTO/LOGO already skipped above
 
     # Construct FN from N if missing
@@ -470,7 +476,7 @@ def parse_vcard(vcard_text: str, source_file: str = "") -> Contact | None:
                 _str_field(getattr(a, "code", "")),
                 _str_field(getattr(a, "country", "")),
             ]
-            value = ", ".join(p for p in parts if p)
+            value = ";".join(parts)
             if value:
                 contact.fields.append(ContactField("adr", value, params))
 
@@ -525,6 +531,18 @@ def parse_vcard(vcard_text: str, source_file: str = "") -> Contact | None:
                 cat = cat.strip()
                 if cat:
                     contact.fields.append(ContactField("categories", cat))
+
+    # UID
+    if hasattr(vcard, "uid"):
+        contact.uid = vcard.uid.value.strip()
+
+    # X-ANNIVERSARY → BDAY fallback (if no BDAY present)
+    if not any(f.field_type == "bday" for f in contact.fields):
+        if hasattr(vcard, "x_anniversary"):
+            ann = vcard.x_anniversary.value
+            ann_str = ann.strip() if isinstance(ann, str) else str(ann)
+            if ann_str:
+                contact.fields.append(ContactField("bday", ann_str))
 
     # PHOTO
     photo = _extract_photo(vcard)

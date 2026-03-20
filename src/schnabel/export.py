@@ -2,6 +2,7 @@
 
 import io
 import re
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -92,10 +93,16 @@ def contact_to_vcard(contact: Contact) -> str:
         contact.prefix or "",
         contact.suffix or "",
     ]
-    lines.append(f"N:{';'.join(n_parts)}")
+    lines.append(f"N:{';'.join(_escape_vcard_value(p) for p in n_parts)}")
+
+    # UID
+    uid = contact.uid or str(uuid.uuid4())
+    lines.append(f"UID:{uid}")
 
     # Fields
     for f in contact.fields:
+        if f.field_value is None or not str(f.field_value).strip():
+            continue
         tp = _type_param(f.field_params)
         prefix = f";{tp}" if tp else ""
 
@@ -105,12 +112,15 @@ def contact_to_vcard(contact: Contact) -> str:
             formatted = _format_phone(f.field_value)
             lines.append(f"TEL{prefix}:{formatted}")
         elif f.field_type == "adr":
-            # Re-serialize address
-            parts = [p.strip() for p in f.field_value.split(",")]
-            # ADR: PO;Ext;Street;City;Region;Code;Country
+            # Re-serialize address — stored as semicolon-separated or legacy comma-separated
+            parts = f.field_value.split(";")
+            if len(parts) < 5 and "," in f.field_value:
+                # Legacy comma-separated format
+                parts = [p.strip() for p in f.field_value.split(",")]
             while len(parts) < 5:
                 parts.append("")
-            adr_val = f";;{parts[0]};{parts[1]};{parts[2]};{parts[3]};{parts[4]}"
+            escaped = [_escape_vcard_value(p) for p in parts[:5]]
+            adr_val = f";;{escaped[0]};{escaped[1]};{escaped[2]};{escaped[3]};{escaped[4]}"
             lines.append(f"ADR{prefix}:{adr_val}")
         elif f.field_type == "org":
             lines.append(f"ORG:{_escape_vcard_value(f.field_value)}")
@@ -143,7 +153,7 @@ def contact_to_vcard(contact: Contact) -> str:
     for photo in contact.photos:
         fmt = photo.photo_format.upper()
         b64 = base64.b64encode(photo.photo_data).decode("ascii")
-        lines.append(f"PHOTO;ENCODING=b;TYPE={fmt}:{b64}")
+        lines.append(f"PHOTO;ENCODING=BASE64;TYPE={fmt}:{b64}")
 
     # REV
     rev = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -192,6 +202,114 @@ def export_contacts(db: Database, output_dir: Path, normalize_photos: bool = Tru
         counts[category] = len(contacts)
 
     return counts
+
+
+def export_by_category(db: Database, output_dir: Path, normalize_photos: bool = True,
+                       max_lines: int = 0) -> dict[str, int]:
+    """Export real contacts split by CATEGORIES into separate VCF files.
+
+    Each category gets its own file: kontakte-{category}.vcf
+    Contacts without categories go into kontakte-unsortiert.vcf
+    Stubs and spam are still written to their own files (unchanged).
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    counts = {}
+
+    # Get all real contacts
+    real_contacts = db.get_contacts_by_category("real")
+    real_contacts.sort(key=lambda c: (c.fn or "").lower())
+
+    # Group by category
+    by_cat: dict[str, list[Contact]] = {}
+    for contact in real_contacts:
+        cats = contact.categories
+        if not cats:
+            by_cat.setdefault("unsortiert", []).append(contact)
+        else:
+            for cat in cats:
+                by_cat.setdefault(cat, []).append(contact)
+
+    # Write category files
+    for cat_name, contacts in sorted(by_cat.items()):
+        # Sanitize filename
+        safe_name = re.sub(r"[^\w\s-]", "", cat_name).strip().replace(" ", "_").lower()
+        if not safe_name:
+            safe_name = "unsortiert"
+        basename = f"kontakte-{safe_name}"
+
+        vcards = []
+        for contact in contacts:
+            if normalize_photos:
+                _normalize_contact_photos(contact)
+            vcards.append(contact_to_vcard(contact))
+
+        if max_lines > 0 and vcards:
+            _write_split(vcards, output_dir, basename, max_lines)
+        else:
+            content = "\r\n".join(vcards)
+            if content:
+                content += "\r\n"
+            (output_dir / f"{basename}.vcf").write_text(content, encoding="utf-8")
+        counts[cat_name] = len(contacts)
+
+    # Stubs and spam as usual
+    for category, basename in [("stub", "stubs"), ("spam", "spam")]:
+        contacts = db.get_contacts_by_category(category)
+        contacts.sort(key=lambda c: (c.fn or "").lower())
+        vcards = []
+        for contact in contacts:
+            if normalize_photos:
+                _normalize_contact_photos(contact)
+            vcards.append(contact_to_vcard(contact))
+        if max_lines > 0 and vcards:
+            _write_split(vcards, output_dir, basename, max_lines)
+        else:
+            content = "\r\n".join(vcards)
+            if content:
+                content += "\r\n"
+            (output_dir / f"{basename}.vcf").write_text(content, encoding="utf-8")
+        counts[f"({category})"] = len(contacts)
+
+    return counts
+
+
+def get_export_preview(db: Database) -> dict:
+    """Build an export preview with counts per category.
+
+    Returns a dict with:
+      - real: total real contacts
+      - real_with_photos: real contacts with photos
+      - categories: dict of category_name → count
+      - uncategorized: count of real contacts without categories
+      - stubs: stub count
+      - spam: spam count
+    """
+    preview = {}
+
+    real_contacts = db.get_contacts_by_category("real")
+    preview["real"] = len(real_contacts)
+    preview["real_with_photos"] = sum(1 for c in real_contacts if c.photos)
+
+    # Count by category
+    cat_counts: dict[str, int] = {}
+    uncategorized = 0
+    for contact in real_contacts:
+        cats = contact.categories
+        if not cats:
+            uncategorized += 1
+        else:
+            for cat in cats:
+                cat_counts[cat] = cat_counts.get(cat, 0) + 1
+    preview["categories"] = cat_counts
+    preview["uncategorized"] = uncategorized
+
+    stubs = db.get_contacts_by_category("stub")
+    preview["stubs"] = len(stubs)
+
+    spam = db.get_contacts_by_category("spam")
+    preview["spam"] = len(spam)
+
+    return preview
 
 
 def _write_split(vcards: list[str], output_dir: Path, basename: str, max_lines: int):
