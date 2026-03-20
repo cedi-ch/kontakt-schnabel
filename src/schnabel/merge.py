@@ -42,8 +42,13 @@ def determine_survivor(db: Database, a_id: int, b_id: int) -> tuple[int, int]:
 
 
 def merge_contacts(db: Database, survivor_id: int, absorbed_id: int,
-                   merge_type: str = "auto", confidence: float = 0.0) -> int:
-    """Merge absorbed contact into survivor. Returns merge_history ID."""
+                   merge_type: str = "auto", confidence: float = 0.0,
+                   skip_pair_reassign: bool = False) -> int:
+    """Merge absorbed contact into survivor. Returns merge_history ID.
+
+    Set skip_pair_reassign=True during batch auto-merge for performance.
+    Pairs involving deactivated contacts are filtered by is_active checks.
+    """
     survivor = db.get_contact(survivor_id)
     absorbed = db.get_contact(absorbed_id)
     if not survivor or not absorbed:
@@ -118,8 +123,9 @@ def merge_contacts(db: Database, survivor_id: int, absorbed_id: int,
     # Record merge
     merge_id = db.insert_merge(survivor_id, absorbed_id, merge_type, confidence, fields_added)
 
-    # Reassign pending similarity pairs
-    db.reassign_pairs(absorbed_id, survivor_id)
+    # Reassign pending similarity pairs (skip during batch for performance)
+    if not skip_pair_reassign:
+        db.reassign_pairs(absorbed_id, survivor_id)
 
     db.commit()
     return merge_id
@@ -178,33 +184,46 @@ def auto_resolve(db: Database, aggressiveness: float = 0.5,
     """Auto-merge pairs above the confidence threshold.
 
     Returns number of merges performed.
+    Skips pair reassignment during batch merge for performance — inactive
+    contacts are filtered by is_active checks in get_pending_pairs.
     """
     threshold = aggressiveness_to_threshold(aggressiveness)
     pairs = db.get_pending_pairs(min_confidence=threshold)
     total = len(pairs)
     merged = 0
 
+    # Track which contacts have been absorbed (deactivated) in this batch
+    absorbed_ids: set[int] = set()
+
     for i, pair in enumerate(pairs):
-        # Re-check both contacts are still active
-        a = db.get_contact(pair["contact_a_id"])
-        b = db.get_contact(pair["contact_b_id"])
-        if not a or not b or not a.is_active or not b.is_active:
+        a_id = pair["contact_a_id"]
+        b_id = pair["contact_b_id"]
+
+        # Fast check: skip if either contact was already absorbed in this batch
+        if a_id in absorbed_ids or b_id in absorbed_ids:
             db.update_pair_resolution(pair["id"], "skipped")
+            if i % 500 == 0:
+                db.commit()
             continue
 
-        survivor_id, absorbed_id = determine_survivor(
-            db, pair["contact_a_id"], pair["contact_b_id"]
-        )
+        survivor_id, absorbed_id = determine_survivor(db, a_id, b_id)
 
         merge_contacts(
             db, survivor_id, absorbed_id,
             merge_type="auto",
             confidence=pair["confidence"],
+            skip_pair_reassign=True,
         )
+        absorbed_ids.add(absorbed_id)
         db.update_pair_resolution(pair["id"], "auto_merged")
         merged += 1
 
-        if progress_callback and (i % 10 == 0 or i == total - 1):
+        # Batch commit every 100 merges
+        if merged % 100 == 0:
+            db.commit()
+
+        if progress_callback and (i % 100 == 0 or i == total - 1):
             progress_callback(i + 1, total, merged)
 
+    db.commit()
     return merged
