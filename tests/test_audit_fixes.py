@@ -5,6 +5,7 @@ from schnabel.merge import merge_contacts, undo_merge
 from schnabel.export import contact_to_vcard, _escape_text_value, _escape_n_component
 from schnabel.reader import parse_vcard
 from schnabel.match import score_contacts
+from schnabel.export import _normalize_bday_for_export
 
 
 # --- BUG-06: Undo reverses name adoption ---
@@ -187,6 +188,55 @@ def test_escape_n_component_escapes_semicolon():
 def test_escape_n_component_preserves_comma():
     """N component escaping must NOT escape commas (multi-value separator)."""
     assert _escape_n_component("Hans,Peter") == "Hans,Peter"
+
+
+# --- BUG-16: BDAY best-effort normalization at export ---
+
+def test_bday_iso_passthrough():
+    assert _normalize_bday_for_export("1985-03-04") == "1985-03-04"
+
+def test_bday_compact_iso():
+    assert _normalize_bday_for_export("19850304") == "1985-03-04"
+
+def test_bday_datetime_stripped():
+    assert _normalize_bday_for_export("1985-03-04T12:00:00Z") == "1985-03-04"
+
+def test_bday_swiss_dot():
+    assert _normalize_bday_for_export("15.03.1985") == "1985-03-15"
+
+def test_bday_swiss_ambiguous_assumes_dd_mm():
+    """Both ≤12: assume DD.MM (European convention)."""
+    assert _normalize_bday_for_export("04.03.1985") == "1985-03-04"
+
+def test_bday_slash_unambiguous():
+    assert _normalize_bday_for_export("15/03/1985") == "1985-03-15"
+
+def test_bday_slash_ambiguous_assumes_european():
+    """Slash format, both ≤12: assume DD/MM (European)."""
+    assert _normalize_bday_for_export("03/04/1985") == "1985-04-03"
+
+def test_bday_2digit_year():
+    assert _normalize_bday_for_export("15.03.85") == "1985-03-15"
+
+def test_bday_text_german():
+    assert _normalize_bday_for_export("15. März 1985") == "1985-03-15"
+
+def test_bday_text_english():
+    assert _normalize_bday_for_export("March 15, 1985") == "1985-03-15"
+
+def test_bday_no_year():
+    assert _normalize_bday_for_export("15.03.") == "--03-15"
+
+def test_bday_unparseable_passthrough():
+    """Completely unknown formats should pass through (preserve data)."""
+    assert _normalize_bday_for_export("irgendwann") == "irgendwann"
+
+def test_bday_in_exported_vcard():
+    """Non-ISO BDAY should be normalized in the actual export."""
+    c = Contact(fn="Bday Test", family_name="Test", given_name="Bday")
+    c.fields.append(ContactField("bday", "15.03.1985"))
+    vcard = contact_to_vcard(c)
+    assert "BDAY:1985-03-15" in vcard
 
 
 # --- ADR 7-component roundtrip ---

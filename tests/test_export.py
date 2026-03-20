@@ -129,7 +129,26 @@ def test_photo_encoding_base64():
     ))
     vcard = contact_to_vcard(c)
     assert "ENCODING=BASE64" in vcard
-    assert "ENCODING=b" not in vcard
+    assert "ENCODING=b;" not in vcard
+
+
+def test_photo_mime_style_continuation():
+    """PHOTO base64 must be in MIME-style continuation lines, not one long line."""
+    c = Contact(fn="MIME Photo", family_name="Test", given_name="MIME")
+    c.photos.append(Photo(
+        photo_data=b"\xff\xd8\xff\xe0" + b"\x00" * 500,
+        photo_format="JPEG",
+    ))
+    vcard = contact_to_vcard(c)
+    # Header line should end with colon (empty value)
+    assert "PHOTO;ENCODING=BASE64;TYPE=JPEG:\r\n" in vcard
+    # Base64 data should be in continuation lines (leading space)
+    photo_lines = [l for l in vcard.split("\r\n") if l.startswith(" ") and "/" in l]
+    assert len(photo_lines) > 0
+    # No continuation line should be longer than 77 chars (space + 76 data)
+    for line in vcard.split("\r\n"):
+        if line.startswith(" "):
+            assert len(line) <= 77, f"Line too long: {len(line)} chars"
 
 
 # --- Bug #8: ADR with commas ---

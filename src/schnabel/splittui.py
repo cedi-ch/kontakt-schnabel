@@ -338,9 +338,11 @@ def _show_fields(contact: Contact) -> list[tuple[int, str, str]]:
         label = FIELD_LABELS.get(f.field_type, f.field_type.upper())
         entries.append((i + 1, label, f.field_value))
 
+    from schnabel.ui_helpers import index_to_label
     for num, label, value in entries:
+        key_label = index_to_label(num)
         line = Text()
-        line.append(f"    {num:<3}", style="bold cyan")
+        line.append(f"    {key_label:<3}", style="bold cyan")
         line.append(f"{label + ':':<10}", style="bold")
         line.append(_truncate(value, 50))
         console.print(line)
@@ -349,17 +351,16 @@ def _show_fields(contact: Contact) -> list[tuple[int, str, str]]:
 
 
 def _prompt_field_number(entries: list) -> int | None:
-    """Prompt for field number via readchar. Returns number or None."""
+    """Prompt for field number via readchar. Supports 0-9 then a-z."""
+    from schnabel.ui_helpers import index_to_label, key_to_field_index
     max_num = len(entries) - 1
-    console.print(f"  Feld # (0-{max_num}): ", end="")
+    max_label = index_to_label(max_num)
+    console.print(f"  Feld # (0-{max_label}): ", end="")
     key = readchar.readchar()
     console.print(key)
-    try:
-        num = int(key)
-        if 0 <= num <= max_num:
-            return num
-    except ValueError:
-        pass
+    num = key_to_field_index(key, max_num)
+    if num is not None:
+        return num
     console.print("  [red]Ung\u00fcltige Feldnummer.[/red]")
     time.sleep(0.7)
     return None

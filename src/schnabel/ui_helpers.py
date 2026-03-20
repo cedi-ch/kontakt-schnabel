@@ -31,6 +31,33 @@ def confidence_bar(confidence: float, width: int = 25) -> Text:
     return bar
 
 
+# Keystroke-to-index mapping: 0-9 then a-z → supports up to 36 fields
+_KEY_TO_INDEX = {}
+for _i in range(10):
+    _KEY_TO_INDEX[str(_i)] = _i
+for _i, _c in enumerate("abcdefghijklmnopqrstuvwxyz", start=10):
+    _KEY_TO_INDEX[_c] = _i
+
+_INDEX_TO_KEY = {v: k for k, v in _KEY_TO_INDEX.items()}
+
+
+def index_to_label(idx: int) -> str:
+    """Convert a field index to its display label (0-9, a-z)."""
+    return _INDEX_TO_KEY.get(idx, str(idx))
+
+
+def key_to_field_index(key: str, max_index: int) -> int | None:
+    """Convert a single keystroke to a field index.
+
+    Supports 0-9 for indices 0-9, then a-z for 10-35.
+    Returns None if the key is invalid or out of range.
+    """
+    idx = _KEY_TO_INDEX.get(key.lower())
+    if idx is not None and 0 <= idx <= max_index:
+        return idx
+    return None
+
+
 def safe_readchar() -> str | None:
     """Read a single character, handling errors gracefully.
 

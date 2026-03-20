@@ -147,16 +147,20 @@ def _render_contact(contact: ParsedContact, idx: int, total: int,
 
 
 def _prompt_field_number(contact: ParsedContact, prompt_text: str = "Feld #: ") -> int | None:
-    """Prompt user for a field number. Returns 0-based index or None."""
-    console.print(f"\n  {prompt_text}", end="")
+    """Prompt user for a field number. Returns 0-based index or None.
+
+    Fields are displayed 1-based (1-9, a-z), but returned as 0-based index.
+    """
+    from schnabel.ui_helpers import index_to_label, key_to_field_index
+    max_num = len(contact.fields)
+    max_label = index_to_label(max_num)
+    console.print(f"\n  {prompt_text}(1-{max_label}): ", end="")
     key = readchar.readchar()
     console.print(key)
-    try:
-        num = int(key)
-        if 1 <= num <= len(contact.fields):
-            return num - 1
-    except ValueError:
-        pass
+    # Fields displayed as 1-based, so key "1" → index 0
+    num = key_to_field_index(key, max_num)
+    if num is not None and num >= 1:
+        return num - 1
     console.print("  [red]Ung\u00fcltige Feldnummer.[/red]")
     _pause()
     return None

@@ -91,6 +91,96 @@ def _escape_text_value(value: str) -> str:
     return value
 
 
+def _normalize_bday_for_export(value: str) -> str:
+    """Best-effort normalization of BDAY to ISO 8601 at export time.
+
+    Handles common formats deterministically. For ambiguous DD/MM vs MM/DD,
+    assumes European (DD.MM) convention. Returns original value if unparseable.
+    """
+    val = value.strip()
+    if not val:
+        return val
+
+    # Already ISO: YYYY-MM-DD or --MM-DD
+    if re.match(r"^\d{4}-\d{2}-\d{2}$", val) or re.match(r"^--\d{2}-\d{2}$", val):
+        return val
+
+    # Compact ISO: YYYYMMDD
+    m = re.match(r"^(\d{4})(\d{2})(\d{2})$", val)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+
+    # DateTime: strip time portion
+    m = re.match(r"^(\d{4}-\d{2}-\d{2})T", val)
+    if m:
+        return m.group(1)
+
+    # DD.MM.YYYY or DD.MM.YY (Swiss/German)
+    m = re.match(r"^(\d{1,2})\.(\d{1,2})\.(\d{2,4})$", val)
+    if m:
+        d, mo, y = int(m.group(1)), int(m.group(2)), m.group(3)
+        year = int(y) if len(y) == 4 else (1900 + int(y) if int(y) > 30 else 2000 + int(y))
+        if d > 12 and 1 <= mo <= 12:
+            return f"{year:04d}-{mo:02d}-{d:02d}"
+        if mo > 12 and 1 <= d <= 12:
+            return f"{year:04d}-{d:02d}-{mo:02d}"
+        # Both ≤12 → assume DD.MM (European)
+        if 1 <= d <= 31 and 1 <= mo <= 12:
+            return f"{year:04d}-{mo:02d}-{d:02d}"
+
+    # DD.MM (no year)
+    m = re.match(r"^(\d{1,2})\.(\d{1,2})\.?$", val)
+    if m:
+        d, mo = int(m.group(1)), int(m.group(2))
+        if d > 12 and 1 <= mo <= 12:
+            return f"--{mo:02d}-{d:02d}"
+        if mo > 12 and 1 <= d <= 12:
+            return f"--{d:02d}-{mo:02d}"
+        if 1 <= d <= 31 and 1 <= mo <= 12:
+            return f"--{mo:02d}-{d:02d}"
+
+    # Slash: MM/DD/YYYY or DD/MM/YYYY — assume DD/MM (European)
+    m = re.match(r"^(\d{1,2})[/\-](\d{1,2})[/\-](\d{2,4})$", val)
+    if m:
+        a, b, y = int(m.group(1)), int(m.group(2)), m.group(3)
+        year = int(y) if len(y) == 4 else (1900 + int(y) if int(y) > 30 else 2000 + int(y))
+        if a > 12 and 1 <= b <= 12:
+            return f"{year:04d}-{b:02d}-{a:02d}"  # a must be day
+        if b > 12 and 1 <= a <= 12:
+            return f"{year:04d}-{a:02d}-{b:02d}"  # b must be day
+        # Both ≤12 → assume DD/MM (European)
+        if 1 <= a <= 31 and 1 <= b <= 12:
+            return f"{year:04d}-{b:02d}-{a:02d}"
+
+    # Text month: "March 15, 1985" / "15. März 1985" etc.
+    _months = {
+        "january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6,
+        "july": 7, "august": 8, "september": 9, "october": 10, "november": 11, "december": 12,
+        "jan": 1, "feb": 2, "mar": 3, "apr": 4, "jun": 6, "jul": 7, "aug": 8,
+        "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+        "januar": 1, "februar": 2, "märz": 3, "mai": 5, "juni": 6, "juli": 7,
+        "oktober": 10, "dezember": 12, "mär": 3, "okt": 10, "dez": 12,
+    }
+    # "15. März 1985" / "15 March 1985"
+    m = re.match(r"(\d{1,2})\.?\s+(\w+)\s+(\d{4})", val)
+    if m:
+        day, month_str, year = int(m.group(1)), m.group(2).lower().rstrip("."), int(m.group(3))
+        month = _months.get(month_str)
+        if month and 1 <= day <= 31:
+            return f"{year:04d}-{month:02d}-{day:02d}"
+
+    # "March 15, 1985"
+    m = re.match(r"(\w+)\s+(\d{1,2}),?\s+(\d{4})", val)
+    if m:
+        month_str, day, year = m.group(1).lower().rstrip("."), int(m.group(2)), int(m.group(3))
+        month = _months.get(month_str)
+        if month and 1 <= day <= 31:
+            return f"{year:04d}-{month:02d}-{day:02d}"
+
+    # Unparseable — return as-is (preserve data)
+    return val
+
+
 def _type_param(params: dict) -> str:
     """Build TYPE parameter string from field params."""
     if "TYPE" in params:
@@ -162,9 +252,11 @@ def contact_to_vcard(contact: Contact) -> str:
         elif f.field_type == "note":
             lines.append(f"NOTE:{_escape_text_value(f.field_value)}")
         elif f.field_type == "url":
-            lines.append(f"URL:{f.field_value}")
+            # URLs are uri type — strip invalid characters (newlines, CRs)
+            clean_url = f.field_value.replace("\n", "").replace("\r", "")
+            lines.append(f"URL:{clean_url}")
         elif f.field_type == "bday":
-            lines.append(f"BDAY:{f.field_value}")
+            lines.append(f"BDAY:{_normalize_bday_for_export(f.field_value)}")
         elif f.field_type == "nickname":
             lines.append(f"NICKNAME:{_escape_text_value(f.field_value)}")
         elif f.field_type == "role":
@@ -183,11 +275,15 @@ def contact_to_vcard(contact: Contact) -> str:
         escaped_cats = [_escape_vcard_value(c) for c in seen_cats.values()]
         lines.append(f"CATEGORIES:{','.join(escaped_cats)}")
 
-    # Photo
+    # Photo (MIME-style: header on first line, base64 in 76-char continuation lines)
     for photo in contact.photos:
         fmt = photo.photo_format.upper()
         b64 = base64.b64encode(photo.photo_data).decode("ascii")
-        lines.append(f"PHOTO;ENCODING=BASE64;TYPE={fmt}:{b64}")
+        # Split into 76-char chunks (MIME standard line length)
+        chunks = [b64[i:i+76] for i in range(0, len(b64), 76)]
+        lines.append(f"PHOTO;ENCODING=BASE64;TYPE={fmt}:")
+        for chunk in chunks:
+            lines.append(f" {chunk}")  # continuation line (leading space)
 
     # REV
     rev = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
