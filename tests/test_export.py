@@ -45,6 +45,31 @@ def test_contact_to_vcard_basic():
     assert "\r\n" in vcard  # CRLF line endings
 
 
+# --- Audit BUG-01: FN must NOT escape commas/semicolons ---
+
+def test_fn_comma_not_escaped():
+    """FN is a free-text field — commas must NOT be escaped."""
+    c = Contact(fn="Smith, Jr.", family_name="Smith", given_name="John")
+    vcard = contact_to_vcard(c)
+    assert "FN:Smith, Jr." in vcard
+    assert "FN:Smith\\," not in vcard
+
+
+def test_fn_semicolon_not_escaped():
+    """FN is a free-text field — semicolons must NOT be escaped."""
+    c = Contact(fn="O;Brien", family_name="O;Brien", given_name="Test")
+    vcard = contact_to_vcard(c)
+    assert "FN:O;Brien" in vcard
+    assert "FN:O\\;" not in vcard
+
+
+def test_fn_newline_escaped():
+    """FN must escape newlines."""
+    c = Contact(fn="Line1\nLine2", family_name="Test", given_name="NL")
+    vcard = contact_to_vcard(c)
+    assert "FN:Line1\\nLine2" in vcard
+
+
 # --- Bug #1: N-field escaping ---
 
 def test_n_field_semicolon_escaping():
@@ -54,11 +79,12 @@ def test_n_field_semicolon_escaping():
     assert "N:O\\;Brien;Conan;;;" in vcard
 
 
-def test_n_field_comma_escaping():
-    """Commas in name parts must be escaped."""
+def test_n_field_comma_preserved():
+    """Commas in N components are multi-value separators per RFC 2426 — NOT escaped."""
     c = Contact(fn="Smith, Jr.", family_name="Smith, Jr.", given_name="John")
     vcard = contact_to_vcard(c)
-    assert "N:Smith\\, Jr.;John;;;" in vcard
+    # Comma in N component should NOT be escaped (it's a valid multi-value separator)
+    assert "N:Smith, Jr.;John;;;" in vcard
 
 
 # --- Bug #2 + #3: Empty/None fields ---
@@ -111,12 +137,46 @@ def test_photo_encoding_base64():
 def test_adr_with_comma_in_street():
     """Address with commas in street name must survive export (semicolon-separated storage)."""
     c = Contact(fn="Addr Test", family_name="Test", given_name="Addr")
-    # Semicolon-separated (new format): street;city;region;code;country
-    c.fields.append(ContactField("adr", "Hauptstrasse 1, Apt 3;Zürich;;8001;CH"))
+    # 7-component format: PO;Extended;Street;City;Region;Code;Country
+    c.fields.append(ContactField("adr", ";;Hauptstrasse 1, Apt 3;Zürich;;8001;CH"))
     vcard = contact_to_vcard(c)
-    # The comma in the street should be escaped in the output
+    # The comma in the street should be escaped in ADR (structured field)
     assert "Hauptstrasse 1\\, Apt 3" in vcard
     assert "8001" in vcard
+
+
+def test_adr_7_components():
+    """ADR must output all 7 RFC 2426 components."""
+    c = Contact(fn="ADR7 Test", family_name="Test", given_name="ADR7")
+    c.fields.append(ContactField("adr", "PO Box 1;Suite 2;Bahnhofstr 3;Zürich;ZH;8001;CH"))
+    vcard = contact_to_vcard(c)
+    assert "ADR" in vcard
+    # Find the ADR line
+    for line in vcard.split("\r\n"):
+        if line.startswith("ADR"):
+            adr_value = line.split(":", 1)[1]
+            parts = adr_value.split(";")
+            assert len(parts) == 7
+            assert parts[0] == "PO Box 1"
+            assert parts[2] == "Bahnhofstr 3"
+            assert parts[5] == "8001"
+            break
+    else:
+        assert False, "No ADR line found"
+
+
+def test_adr_legacy_5_parts_gets_padded():
+    """Legacy 5-part comma-separated addresses should be padded to 7 components."""
+    c = Contact(fn="Legacy ADR", family_name="Test", given_name="Legacy")
+    # Old comma-separated format
+    c.fields.append(ContactField("adr", "Strasse 1, Zürich, , 8001, CH"))
+    vcard = contact_to_vcard(c)
+    for line in vcard.split("\r\n"):
+        if line.startswith("ADR"):
+            adr_value = line.split(":", 1)[1]
+            parts = adr_value.split(";")
+            assert len(parts) == 7
+            break
 
 
 # --- UID tests ---
@@ -173,9 +233,10 @@ def test_roundtrip_n_escaping():
 
 
 def test_roundtrip_adr_preserved():
-    """Address data must survive export→re-import."""
+    """Address data must survive export→re-import with all 7 components."""
     c = Contact(fn="Addr RT", family_name="RT", given_name="Addr")
-    c.fields.append(ContactField("adr", "Bahnhofstrasse 1;Zürich;;8001;Schweiz"))
+    # 7-component: PO;Extended;Street;City;Region;Code;Country
+    c.fields.append(ContactField("adr", ";;Bahnhofstrasse 1;Zürich;;8001;Schweiz"))
     rt = _roundtrip(c)
     addrs = rt.addresses
     assert len(addrs) == 1

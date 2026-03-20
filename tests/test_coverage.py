@@ -265,12 +265,13 @@ def test_export_multiple_type_params():
     assert "TYPE=VOICE" in vcard
 
 
-def test_export_org_escaped():
-    """ORG with special chars should be escaped."""
+def test_export_org_text_escaped():
+    """ORG is a free-text field — only backslash and newline are escaped."""
     c = Contact(fn="Org Test", family_name="Test", given_name="Org")
     c.fields.append(ContactField("org", "ACME; Inc."))
     vcard = contact_to_vcard(c)
-    assert "ORG:ACME\\; Inc." in vcard
+    # Semicolons in ORG are NOT escaped (free-text field per RFC 2426)
+    assert "ORG:ACME; Inc." in vcard
 
 
 def test_export_note_escaped():

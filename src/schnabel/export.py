@@ -55,10 +55,38 @@ def _format_phone(phone: str, region: str = DEFAULT_PHONE_REGION) -> str:
 
 
 def _escape_vcard_value(value: str) -> str:
-    """Escape special characters in vCard values."""
+    """Escape special characters in vCard structured values (N, ADR).
+
+    Escapes semicolons (component separator), commas (multi-value separator
+    within components), backslashes, and newlines.
+    """
     value = value.replace("\\", "\\\\")
     value = value.replace(";", "\\;")
     value = value.replace(",", "\\,")
+    value = value.replace("\n", "\\n")
+    return value
+
+
+def _escape_n_component(value: str) -> str:
+    """Escape a single N field component.
+
+    RFC 2426 §3.1.2: N components are ;-separated. Within a component,
+    commas separate multiple values (e.g. given names "Hans,Peter").
+    So we escape semicolons but NOT commas.
+    """
+    value = value.replace("\\", "\\\\")
+    value = value.replace(";", "\\;")
+    value = value.replace("\n", "\\n")
+    return value
+
+
+def _escape_text_value(value: str) -> str:
+    """Escape a free-text vCard value (FN, TITLE, NOTE, NICKNAME, ROLE, ORG).
+
+    RFC 2426: these are single text values where semicolons and commas
+    do NOT need escaping — only backslash and newline.
+    """
+    value = value.replace("\\", "\\\\")
     value = value.replace("\n", "\\n")
     return value
 
@@ -83,7 +111,7 @@ def contact_to_vcard(contact: Contact) -> str:
     # FN
     fn = contact.fn or f"{contact.given_name} {contact.family_name}".strip()
     if fn:
-        lines.append(f"FN:{_escape_vcard_value(fn)}")
+        lines.append(f"FN:{_escape_text_value(fn)}")
 
     # N
     n_parts = [
@@ -93,7 +121,7 @@ def contact_to_vcard(contact: Contact) -> str:
         contact.prefix or "",
         contact.suffix or "",
     ]
-    lines.append(f"N:{';'.join(_escape_vcard_value(p) for p in n_parts)}")
+    lines.append(f"N:{';'.join(_escape_n_component(p) for p in n_parts)}")
 
     # UID
     uid = contact.uid or str(uuid.uuid4())
@@ -112,30 +140,35 @@ def contact_to_vcard(contact: Contact) -> str:
             formatted = _format_phone(f.field_value)
             lines.append(f"TEL{prefix}:{formatted}")
         elif f.field_type == "adr":
-            # Re-serialize address — stored as semicolon-separated or legacy comma-separated
+            # Re-serialize address — stored as 7 semicolon-separated components
+            # (PO Box;Extended;Street;City;Region;Code;Country) or legacy formats
             parts = f.field_value.split(";")
             if len(parts) < 5 and "," in f.field_value:
-                # Legacy comma-separated format
-                parts = [p.strip() for p in f.field_value.split(",")]
-            while len(parts) < 5:
+                # Legacy comma-separated format (5 parts: street,city,region,code,country)
+                legacy = [p.strip() for p in f.field_value.split(",")]
+                while len(legacy) < 5:
+                    legacy.append("")
+                # Convert to 7-component: prepend empty PO Box and Extended
+                parts = ["", ""] + legacy[:5]
+            while len(parts) < 7:
                 parts.append("")
-            escaped = [_escape_vcard_value(p) for p in parts[:5]]
-            adr_val = f";;{escaped[0]};{escaped[1]};{escaped[2]};{escaped[3]};{escaped[4]}"
+            escaped = [_escape_vcard_value(p) for p in parts[:7]]
+            adr_val = ";".join(escaped)
             lines.append(f"ADR{prefix}:{adr_val}")
         elif f.field_type == "org":
-            lines.append(f"ORG:{_escape_vcard_value(f.field_value)}")
+            lines.append(f"ORG:{_escape_text_value(f.field_value)}")
         elif f.field_type == "title":
-            lines.append(f"TITLE:{_escape_vcard_value(f.field_value)}")
+            lines.append(f"TITLE:{_escape_text_value(f.field_value)}")
         elif f.field_type == "note":
-            lines.append(f"NOTE:{_escape_vcard_value(f.field_value)}")
+            lines.append(f"NOTE:{_escape_text_value(f.field_value)}")
         elif f.field_type == "url":
             lines.append(f"URL:{f.field_value}")
         elif f.field_type == "bday":
             lines.append(f"BDAY:{f.field_value}")
         elif f.field_type == "nickname":
-            lines.append(f"NICKNAME:{_escape_vcard_value(f.field_value)}")
+            lines.append(f"NICKNAME:{_escape_text_value(f.field_value)}")
         elif f.field_type == "role":
-            lines.append(f"ROLE:{_escape_vcard_value(f.field_value)}")
+            lines.append(f"ROLE:{_escape_text_value(f.field_value)}")
         elif f.field_type == "categories":
             pass  # handled after field loop
 

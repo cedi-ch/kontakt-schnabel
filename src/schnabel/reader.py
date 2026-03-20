@@ -467,9 +467,12 @@ def parse_vcard(vcard_text: str, source_file: str = "") -> Contact | None:
             params = {}
             if hasattr(adr, "params") and "TYPE" in adr.params:
                 params["TYPE"] = adr.params["TYPE"]
-            # Serialize address components
+            # Serialize all 7 ADR components per RFC 2426 §3.2.1:
+            # PO Box;Extended;Street;Locality;Region;Postal Code;Country
             a = adr.value
             parts = [
+                _str_field(getattr(a, "box", "")),
+                _str_field(getattr(a, "extended", "")),
                 _str_field(getattr(a, "street", "")),
                 _str_field(getattr(a, "city", "")),
                 _str_field(getattr(a, "region", "")),
