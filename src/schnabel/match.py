@@ -29,16 +29,45 @@ def _token_sort_ratio(s1: str, s2: str) -> float:
 
 
 def find_candidate_pairs(db: Database) -> set[tuple[int, int]]:
-    """Find candidate pairs using blocking on shared normalized values."""
+    """Find candidate pairs using blocking on shared normalized values.
+
+    For email/phone groups: no size limit (shared contact info is strong signal).
+    For name-only groups: limit to 500 contacts (n² pairs gets expensive for
+    very common names, but must handle mass-import duplicates).
+    """
     candidates: set[tuple[int, int]] = set()
 
-    for norm_type in ("email", "phone_e164", "phone_last7", "name_simplified"):
+    # Email and phone groups: no upper limit — shared contact info is definitive
+    for norm_type in ("email", "phone_e164", "phone_last7"):
         groups = db.get_normalized_groups(norm_type)
         for _value, contact_ids in groups.items():
-            if len(contact_ids) < 2 or len(contact_ids) > 100:
-                # Skip groups that are too large (generic names) or singletons
+            if len(contact_ids) < 2:
                 continue
-            # All pairs within the group
+            # For very large groups, only pair each contact with the first one
+            # (chain merge: A←B, A←C, A←D... all merge into A)
+            if len(contact_ids) > 100:
+                anchor = contact_ids[0]
+                for other in contact_ids[1:]:
+                    a, b = min(anchor, other), max(anchor, other)
+                    candidates.add((a, b))
+            else:
+                for i in range(len(contact_ids)):
+                    for j in range(i + 1, len(contact_ids)):
+                        a, b = min(contact_ids[i], contact_ids[j]), max(contact_ids[i], contact_ids[j])
+                        candidates.add((a, b))
+
+    # Name groups: higher limit for mass-import scenarios
+    groups = db.get_normalized_groups("name_simplified")
+    for _value, contact_ids in groups.items():
+        if len(contact_ids) < 2:
+            continue
+        # Chain-pair for large groups (star topology: all pair with first)
+        if len(contact_ids) > 50:
+            anchor = contact_ids[0]
+            for other in contact_ids[1:]:
+                a, b = min(anchor, other), max(anchor, other)
+                candidates.add((a, b))
+        else:
             for i in range(len(contact_ids)):
                 for j in range(i + 1, len(contact_ids)):
                     a, b = min(contact_ids[i], contact_ids[j]), max(contact_ids[i], contact_ids[j])
