@@ -192,18 +192,22 @@ def auto_resolve(db: Database, aggressiveness: float = 0.5,
     total = len(pairs)
     merged = 0
 
-    # Track which contacts have been absorbed (deactivated) in this batch
-    absorbed_ids: set[int] = set()
+    # Map absorbed contact ID → its survivor (for chain resolution)
+    absorbed_to_survivor: dict[int, int] = {}
 
     for i, pair in enumerate(pairs):
         a_id = pair["contact_a_id"]
         b_id = pair["contact_b_id"]
 
-        # Fast check: skip if either contact was already absorbed in this batch
-        if a_id in absorbed_ids or b_id in absorbed_ids:
+        # Resolve chain: if a contact was absorbed, follow to its survivor
+        while a_id in absorbed_to_survivor:
+            a_id = absorbed_to_survivor[a_id]
+        while b_id in absorbed_to_survivor:
+            b_id = absorbed_to_survivor[b_id]
+
+        # Skip self-pairs (both resolved to the same survivor)
+        if a_id == b_id:
             db.update_pair_resolution(pair["id"], "skipped")
-            if i % 500 == 0:
-                db.commit()
             continue
 
         survivor_id, absorbed_id = determine_survivor(db, a_id, b_id)
@@ -214,7 +218,7 @@ def auto_resolve(db: Database, aggressiveness: float = 0.5,
             confidence=pair["confidence"],
             skip_pair_reassign=True,
         )
-        absorbed_ids.add(absorbed_id)
+        absorbed_to_survivor[absorbed_id] = survivor_id
         db.update_pair_resolution(pair["id"], "auto_merged")
         merged += 1
 
