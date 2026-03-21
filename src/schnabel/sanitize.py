@@ -32,23 +32,47 @@ class SanitizeReport:
         return sum(self.reformatted.values())
 
 
+def _clean_address_value(addr: str) -> str:
+    """Clean up raw address value: fix escape artifacts, newlines.
+
+    Preserves semicolon structure for 7-component addresses.
+    """
+    # Unescape vCard escape sequences that survived into stored values
+    result = addr.replace("\\n", " ").replace("\\N", " ")
+    # Replace actual newlines/CRs
+    result = result.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+    # Collapse multiple spaces (but not semicolons — those are structural)
+    result = re.sub(r"\s{2,}", " ", result)
+    return result.strip()
+
+
 def _address_key(addr: str) -> str:
-    """Normalize address for comparison: lowercase, strip punctuation/separators."""
-    key = addr.lower()
+    """Normalize address for comparison: clean, lowercase, sorted tokens."""
+    key = _clean_address_value(addr).lower()
+    # Remove all separators and punctuation for comparison
     key = re.sub(r"[;,.\-/]", " ", key)
-    key = re.sub(r"\s+", " ", key).strip()
-    return key
+    # Collapse whitespace and sort tokens for order-independent matching
+    tokens = sorted(key.split())
+    return " ".join(tokens)
 
 
 def _normalize_address(addr: str) -> str:
-    """Normalize address separators: semicolons and multiple spaces → comma-space."""
-    # Replace semicolons with commas
-    result = addr.replace(";", ",")
-    # Collapse multiple commas/spaces
+    """Normalize address: clean escape artifacts, fix separators."""
+    result = _clean_address_value(addr)
+
+    # If it's semicolon-separated (structured format), clean each component
+    parts = result.split(";")
+    if len(parts) >= 5:
+        cleaned = [p.strip() for p in parts]
+        while len(cleaned) < 7:
+            cleaned.append("")
+        return ";".join(cleaned[:7])
+
+    # Free-form address: strip leading commas, normalize separators
+    result = result.strip(",; ").strip()
     result = re.sub(r"\s*,\s*", ", ", result)
-    # Collapse multiple spaces
     result = re.sub(r"\s{2,}", " ", result)
-    return result.strip().strip(",").strip()
+    return result
 
 
 def _url_key(url: str) -> str:
@@ -426,26 +450,36 @@ def sanitize_contacts(db: Database, progress_callback=None) -> SanitizeReport:
                 else:
                     seen[key] = fid
 
-        # Step 4: Address normalize + dedup
+        # Step 4: Address clean + normalize + dedup
         addr_fields = [(f.id, f.field_value) for f in contact.fields if f.field_type == "adr"]
         if addr_fields:
-            addr_groups: dict[str, list[tuple[int, str]]] = {}
+            # First pass: clean all address values (fix newlines, escapes, etc.)
+            cleaned_fields = []
             for fid, val in addr_fields:
+                cleaned = _normalize_address(val)
+                if cleaned != val:
+                    db.update_contact_field(fid, cleaned)
+                    report.reformatted["adr"] += 1
+                cleaned_fields.append((fid, cleaned))
+
+            # Second pass: dedup by normalized key
+            addr_groups: dict[str, list[tuple[int, str]]] = {}
+            for fid, val in cleaned_fields:
                 key = _address_key(val)
+                if not key:  # empty after cleaning
+                    db.delete_contact_field(fid)
+                    report.removed["adr"] += 1
+                    continue
                 addr_groups.setdefault(key, []).append((fid, val))
 
             for key, members in addr_groups.items():
-                # Keep the richest (longest) version
-                best_id, best_val = max(members, key=lambda x: len(x[1]))
-                for fid, val in members:
-                    if fid != best_id:
-                        db.delete_contact_field(fid)
-                        report.removed["adr"] += 1
-                # Normalize separators on the surviving address
-                normalized = _normalize_address(best_val)
-                if normalized != best_val:
-                    db.update_contact_field(best_id, normalized)
-                    report.reformatted["adr"] += 1
+                if len(members) > 1:
+                    # Keep the richest (longest) version
+                    best_id, best_val = max(members, key=lambda x: len(x[1]))
+                    for fid, val in members:
+                        if fid != best_id:
+                            db.delete_contact_field(fid)
+                            report.removed["adr"] += 1
 
         # Step 5: URL normalize + dedup
         url_fields = [(f.id, f.field_value) for f in contact.fields if f.field_type == "url"]
