@@ -57,6 +57,10 @@ class Contact:
         return [f.field_value for f in self.fields if f.field_type == "adr"]
 
     @property
+    def bdays(self) -> list[str]:
+        return [f.field_value for f in self.fields if f.field_type == "bday"]
+
+    @property
     def orgs(self) -> list[str]:
         return [f.field_value for f in self.fields if f.field_type == "org"]
 

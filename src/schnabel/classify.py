@@ -32,27 +32,23 @@ def is_spam_email(email: str) -> bool:
 def classify_contact(contact: Contact) -> str:
     """Classify a contact as real, stub, or spam.
 
-    Spam: all emails match spam patterns
-    Stub: only email(s), no structured name, no phone, no photo, no address
-    Real: everything else
+    Spam: all emails match spam patterns, no phone/photo/address
+    Real: has phone, photo, or address (contactable beyond just email)
+    Stub: everything else (name-only, email-only, empty)
     """
     emails = contact.emails
     phones = contact.phones
     addresses = contact.addresses
     has_photo = len(contact.photos) > 0
-    has_name = contact.has_structured_name
 
     # Spam: has email(s) and ALL are spam-like, no other useful data
     if emails and all(is_spam_email(e) for e in emails):
         if not phones and not has_photo and not addresses:
             return "spam"
 
-    # Stub: email-only contact with no real identity
-    if not has_name and not phones and not has_photo and not addresses:
-        if emails:
-            return "stub"
-        # Nothing at all — also a stub
-        if not emails and not contact.fn:
-            return "stub"
+    # Real: has at least one contactable field (phone, photo, or address)
+    if phones or has_photo or addresses:
+        return "real"
 
-    return "real"
+    # Everything else is a stub (name-only, name+email, email-only, empty)
+    return "stub"

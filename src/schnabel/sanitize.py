@@ -9,6 +9,7 @@ import phonenumbers
 
 from schnabel.config import DEFAULT_PHONE_REGION
 from schnabel.db import Database
+from schnabel.model import ContactField
 from schnabel.normalize import normalize_email, normalize_phone
 
 
@@ -38,7 +39,7 @@ def _clean_address_value(addr: str) -> str:
     Preserves semicolon structure for 7-component addresses.
     """
     # Unescape vCard escape sequences that survived into stored values
-    result = addr.replace("\\n", " ").replace("\\N", " ")
+    result = addr.replace("\\;", ";").replace("\\n", " ").replace("\\N", " ")
     # Replace actual newlines/CRs
     result = result.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
     # Collapse multiple spaces (but not semicolons — those are structural)
@@ -50,7 +51,7 @@ def _address_key(addr: str) -> str:
     """Normalize address for comparison: clean, lowercase, sorted tokens."""
     key = _clean_address_value(addr).lower()
     # Remove all separators and punctuation for comparison
-    key = re.sub(r"[;,.\-/]", " ", key)
+    key = re.sub(r"[;,.\-/\\]", " ", key)
     # Collapse whitespace and sort tokens for order-independent matching
     tokens = sorted(key.split())
     return " ".join(tokens)
@@ -73,6 +74,87 @@ def _normalize_address(addr: str) -> str:
     result = re.sub(r"\s*,\s*", ", ", result)
     result = re.sub(r"\s{2,}", " ", result)
     return result
+
+
+def format_address_display(addr: str) -> str:
+    """Convert a stored address to a human-readable one-liner.
+
+    Input: 7-component semicolon string like ';;Hauptstrasse 5;Bern;;3006;CH'
+    Output: 'Hauptstrasse 5, 3006 Bern, CH'
+    """
+    cleaned = _clean_address_value(addr)
+    parts = cleaned.split(";")
+    if len(parts) >= 5:
+        # Structured: [PO, Extended, Street, City, Region, Code, Country]
+        while len(parts) < 7:
+            parts.append("")
+        po, extended, street, city, region, code, country = [p.strip() for p in parts[:7]]
+        pieces = []
+        if po:
+            pieces.append(po)
+        if extended:
+            pieces.append(extended)
+        if street:
+            pieces.append(street)
+        # Code + City together
+        city_part = " ".join(p for p in [code, city] if p)
+        if city_part:
+            pieces.append(city_part)
+        if region:
+            pieces.append(region)
+        if country:
+            pieces.append(country)
+        return ", ".join(pieces) if pieces else cleaned
+    # Free-form: just clean it up
+    return cleaned
+
+
+def find_contacts_with_multi_addresses(db: Database, contact_ids: list[int] | None = None) -> list[int]:
+    """Find contacts that have 2+ genuinely distinct addresses."""
+    if contact_ids is None:
+        contact_ids = db.get_active_contact_ids()
+
+    result = []
+    for cid in contact_ids:
+        contact = db.get_contact(cid)
+        if not contact:
+            continue
+        addr_fields = [f for f in contact.fields if f.field_type == "adr"]
+        if len(addr_fields) < 2:
+            continue
+        # Count distinct by address key
+        keys = {_address_key(f.field_value) for f in addr_fields}
+        if len(keys) >= 2:
+            result.append(cid)
+    return result
+
+
+def resolve_multi_addresses(db: Database, contact_id: int, keep_index: int) -> int:
+    """Keep one address, archive the rest to NOTE fields.
+
+    keep_index: 0-based index into the list of ADR fields.
+    Returns count of archived addresses.
+    """
+    contact = db.get_contact(contact_id)
+    if not contact:
+        return 0
+
+    addr_fields = [(f.id, f.field_value) for f in contact.fields if f.field_type == "adr"]
+    if len(addr_fields) < 2:
+        return 0
+
+    archived = 0
+    for i, (fid, val) in enumerate(addr_fields):
+        if i == keep_index:
+            continue
+        display = format_address_display(val)
+        note_text = f"Alte Adresse: {display}"
+        db.add_contact_field(contact_id, ContactField(field_type="note", field_value=note_text))
+        db.delete_contact_field(fid)
+        archived += 1
+
+    db.commit()
+    return archived
 
 
 def _url_key(url: str) -> str:

@@ -59,6 +59,18 @@ def name_simplified(contact: Contact) -> str:
     return " ".join(tokens)
 
 
+def normalize_bday(bday: str) -> str | None:
+    """Normalize BDAY to YYYY-MM-DD. Returns None if unparseable."""
+    bday = bday.strip()
+    m = re.match(r"(\d{4})-(\d{2})-(\d{2})", bday)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+    m = re.match(r"(\d{4})(\d{2})(\d{2})$", bday)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+    return None
+
+
 def fn_simplified(fn: str) -> str:
     """Simplified version of FN field (for contacts without structured N)."""
     fn = re.sub(r"[^\w\s]", " ", fn)
@@ -102,6 +114,12 @@ def normalize_contacts(db: Database, progress_callback=None):
         ns = name_simplified(contact)
         if ns:
             db.insert_normalized(cid, "name_simplified", ns)
+
+        # BDAY (birthday blocking key)
+        for bday in contact.bdays:
+            norm_bday = normalize_bday(bday)
+            if norm_bday:
+                db.insert_normalized(cid, "bday", norm_bday)
 
         # FN simplified (fallback for contacts without structured name)
         if contact.fn and not contact.has_structured_name:

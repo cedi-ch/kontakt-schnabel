@@ -44,3 +44,24 @@ def test_name_simplified_reorder():
 def test_fn_simplified():
     assert fn_simplified("Müller, Hans") == "hans muller"
     assert fn_simplified("  Hans  Müller  ") == "hans muller"
+
+
+def test_normalize_bday_iso():
+    from schnabel.normalize import normalize_bday
+    assert normalize_bday("1990-04-29") == "1990-04-29"
+
+
+def test_normalize_bday_compact():
+    from schnabel.normalize import normalize_bday
+    assert normalize_bday("19900429") == "1990-04-29"
+
+
+def test_normalize_bday_with_time():
+    from schnabel.normalize import normalize_bday
+    assert normalize_bday("1990-04-29T00:00:00") == "1990-04-29"
+
+
+def test_normalize_bday_invalid():
+    from schnabel.normalize import normalize_bday
+    assert normalize_bday("not-a-date") is None
+    assert normalize_bday("") is None

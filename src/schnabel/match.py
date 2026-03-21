@@ -6,17 +6,19 @@ import jellyfish
 
 from schnabel.config import (
     ANCHOR_MAX_NAME_ONLY,
+    ANCHOR_MIN_SHARED_BDAY_AND_NAME,
     ANCHOR_MIN_SHARED_CONTACT_AND_NAME,
     ANCHOR_MIN_SHARED_EMAIL_AND_PHONE,
     ANCHOR_MIN_SHARED_EMAIL_OR_PHONE,
     WEIGHT_ADDRESS,
+    WEIGHT_BDAY,
     WEIGHT_EMAIL,
     WEIGHT_NAME,
     WEIGHT_PHONE,
     WEIGHT_PHOTO,
 )
 from schnabel.db import Database
-from schnabel.normalize import normalize_email, normalize_phone, name_simplified, fn_simplified
+from schnabel.normalize import normalize_bday, normalize_email, normalize_phone, name_simplified, fn_simplified
 
 
 def _token_sort_ratio(s1: str, s2: str) -> float:
@@ -38,7 +40,7 @@ def find_candidate_pairs(db: Database) -> set[tuple[int, int]]:
     candidates: set[tuple[int, int]] = set()
 
     # Email and phone groups: no upper limit — shared contact info is definitive
-    for norm_type in ("email", "phone_e164", "phone_last7"):
+    for norm_type in ("email", "phone_e164", "phone_last7", "bday"):
         groups = db.get_normalized_groups(norm_type)
         for _value, contact_ids in groups.items():
             if len(contact_ids) < 2:
@@ -180,19 +182,30 @@ def score_contacts(a, b) -> dict:
                 best = max(best, sim)
         address_score = best
 
+    # -- BDAY score --
+    bday_score = 0.0
+    has_shared_bday = False
+    bdays_a = {normalize_bday(b) for b in a.bdays if normalize_bday(b)}
+    bdays_b = {normalize_bday(b) for b in b.bdays if normalize_bday(b)}
+    if bdays_a and bdays_b and (bdays_a & bdays_b):
+        bday_score = 1.0
+        has_shared_bday = True
+
     # -- Weighted confidence --
     confidence = (
         email_score * WEIGHT_EMAIL
         + phone_score * WEIGHT_PHONE
         + name_score * WEIGHT_NAME
+        + bday_score * WEIGHT_BDAY
         + photo_score * WEIGHT_PHOTO
         + address_score * WEIGHT_ADDRESS
     )
 
     # -- Anchor rules --
     has_name_match = name_score > 0.7
-    name_only = (not has_shared_email and not has_shared_phone and has_name_match
-                 and email_score == 0.0 and phone_score == 0.0)
+    name_only = (not has_shared_email and not has_shared_phone and not has_shared_bday
+                 and has_name_match
+                 and email_score == 0.0 and phone_score == 0.0 and bday_score == 0.0)
 
     if has_shared_email and has_shared_phone:
         confidence = max(confidence, ANCHOR_MIN_SHARED_EMAIL_AND_PHONE)
@@ -200,6 +213,9 @@ def score_contacts(a, b) -> dict:
         confidence = max(confidence, ANCHOR_MIN_SHARED_CONTACT_AND_NAME)
     elif has_shared_email or has_shared_phone:
         confidence = max(confidence, ANCHOR_MIN_SHARED_EMAIL_OR_PHONE)
+
+    if has_shared_bday and name_score >= 0.75:
+        confidence = max(confidence, ANCHOR_MIN_SHARED_BDAY_AND_NAME)
 
     if name_only:
         if name_score >= 0.98:
@@ -212,10 +228,12 @@ def score_contacts(a, b) -> dict:
         "email_score": round(email_score, 4),
         "phone_score": round(phone_score, 4),
         "name_score": round(name_score, 4),
+        "bday_score": round(bday_score, 4),
         "photo_score": round(photo_score, 4),
         "address_score": round(address_score, 4),
         "has_shared_email": has_shared_email,
         "has_shared_phone": has_shared_phone,
+        "has_shared_bday": has_shared_bday,
     }
 
 
@@ -255,6 +273,7 @@ def run_matching(db: Database, min_confidence: float = 0.10, progress_callback=N
                 name_score=scores["name_score"],
                 photo_score=scores["photo_score"],
                 address_score=scores["address_score"],
+                bday_score=scores.get("bday_score", 0.0),
             )
             stored += 1
 

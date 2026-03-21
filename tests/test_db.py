@@ -59,3 +59,100 @@ def test_import_source_tracking(tmp_db):
     src_id = tmp_db.add_import_source("/tmp/test.vcf", "abc123", "utf-8")
     tmp_db.update_import_count(src_id, 42)
     assert "abc123" in tmp_db.get_imported_hashes()
+
+
+def test_stats_extended_fields(tmp_db):
+    """get_stats returns field presence and per-category counts."""
+    c = Contact(fn="Full Contact", category="real")
+    c.fields.append(ContactField("email", "test@test.com"))
+    c.fields.append(ContactField("tel", "+41791234567"))
+    c.fields.append(ContactField("bday", "1990-01-15"))
+    c.fields.append(ContactField("adr", ";;Street;City;;1234;CH"))
+    c.fields.append(ContactField("org", "ACME Corp"))
+    c.fields.append(ContactField("note", "Some note"))
+    c.fields.append(ContactField("url", "https://example.com"))
+    c.fields.append(ContactField("categories", "Friends"))
+    tmp_db.insert_contact(c)
+
+    stub = Contact(fn="Stub", category="stub")
+    stub.fields.append(ContactField("email", "stub@test.com"))
+    tmp_db.insert_contact(stub)
+    tmp_db.commit()
+
+    stats = tmp_db.get_stats()
+    assert stats["with_bday"] == 1
+    assert stats["with_adr"] == 1
+    assert stats["with_org"] == 1
+    assert stats["with_note"] == 1
+    assert stats["with_url"] == 1
+    assert stats["real_with_email"] == 1
+    assert stats["real_with_tel"] == 1
+    assert stats["real_with_bday"] == 1
+    assert stats["real_with_adr"] == 1
+    assert stats["stub_with_email"] == 1
+    assert stats["stub_with_tel"] == 0
+
+
+def test_pipeline_run_roundtrip(tmp_db):
+    """log_pipeline_run and get_pipeline_runs roundtrip."""
+    tmp_db.log_pipeline_run("import", {"files": 3, "contacts": 42})
+    tmp_db.log_pipeline_run("match", {"total": 10, "high": 5})
+
+    runs = tmp_db.get_pipeline_runs()
+    assert "import" in runs
+    assert runs["import"]["files"] == 3
+    assert runs["import"]["contacts"] == 42
+    assert "timestamp" in runs["import"]
+    assert "match" in runs
+    assert runs["match"]["total"] == 10
+
+
+def test_delete_category_from_all(tmp_db):
+    """delete_category_from_all removes a specific category from all contacts."""
+    c1 = Contact(fn="A", category="real")
+    c1.fields.append(ContactField("categories", "Friends"))
+    c1.fields.append(ContactField("categories", "importation-05-01-2025"))
+    tmp_db.insert_contact(c1)
+
+    c2 = Contact(fn="B", category="real")
+    c2.fields.append(ContactField("categories", "importation-05-01-2025"))
+    tmp_db.insert_contact(c2)
+
+    c3 = Contact(fn="C", category="real")
+    c3.fields.append(ContactField("categories", "Work"))
+    tmp_db.insert_contact(c3)
+    tmp_db.commit()
+
+    deleted = tmp_db.delete_category_from_all("importation-05-01-2025")
+    assert deleted == 2
+
+    # Friends and Work should remain
+    cats = tmp_db.get_all_category_values()
+    assert "Friends" in cats
+    assert "Work" in cats
+    assert "importation-05-01-2025" not in cats
+
+    # c1 should still have Friends
+    c1_loaded = tmp_db.get_contact(1)
+    cat_values = [f.field_value for f in c1_loaded.fields if f.field_type == "categories"]
+    assert cat_values == ["Friends"]
+
+
+def test_category_breakdown(tmp_db):
+    """get_category_breakdown counts per CATEGORIES value."""
+    c1 = Contact(fn="A", category="real")
+    c1.fields.append(ContactField("categories", "Friends"))
+    tmp_db.insert_contact(c1)
+
+    c2 = Contact(fn="B", category="real")
+    c2.fields.append(ContactField("categories", "Friends"))
+    tmp_db.insert_contact(c2)
+
+    c3 = Contact(fn="C", category="real")
+    c3.fields.append(ContactField("categories", "Work"))
+    tmp_db.insert_contact(c3)
+    tmp_db.commit()
+
+    breakdown = tmp_db.get_category_breakdown()
+    assert breakdown["Friends"] == 2
+    assert breakdown["Work"] == 1

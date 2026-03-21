@@ -68,6 +68,7 @@ CREATE TABLE IF NOT EXISTS similarity_pairs (
     email_score REAL NOT NULL DEFAULT 0.0,
     phone_score REAL NOT NULL DEFAULT 0.0,
     name_score REAL NOT NULL DEFAULT 0.0,
+    bday_score REAL NOT NULL DEFAULT 0.0,
     photo_score REAL NOT NULL DEFAULT 0.0,
     address_score REAL NOT NULL DEFAULT 0.0,
     resolution TEXT NOT NULL DEFAULT 'pending'
@@ -124,6 +125,12 @@ class Database:
             self.conn.execute("SELECT uid FROM contacts LIMIT 0")
         except sqlite3.OperationalError:
             self.conn.execute("ALTER TABLE contacts ADD COLUMN uid TEXT NOT NULL DEFAULT ''")
+            self.conn.commit()
+        # Migration: add bday_score column if missing (existing DBs)
+        try:
+            self.conn.execute("SELECT bday_score FROM similarity_pairs LIMIT 0")
+        except sqlite3.OperationalError:
+            self.conn.execute("ALTER TABLE similarity_pairs ADD COLUMN bday_score REAL NOT NULL DEFAULT 0.0")
             self.conn.commit()
 
     def close(self):
@@ -394,15 +401,17 @@ class Database:
         self, a_id: int, b_id: int, confidence: float,
         email_score: float, phone_score: float, name_score: float,
         photo_score: float, address_score: float,
+        bday_score: float = 0.0,
     ):
         lo, hi = min(a_id, b_id), max(a_id, b_id)
         self.conn.execute(
             """INSERT OR REPLACE INTO similarity_pairs
                (contact_a_id, contact_b_id, confidence,
-                email_score, phone_score, name_score, photo_score, address_score)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                email_score, phone_score, name_score, bday_score,
+                photo_score, address_score)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (lo, hi, confidence, email_score, phone_score, name_score,
-             photo_score, address_score),
+             bday_score, photo_score, address_score),
         )
 
     def clear_similarity_pairs(self):
@@ -635,7 +644,82 @@ class Database:
         ).fetchone()
         stats["contacts_with_categories"] = row["n"]
 
+        # Field presence counts (active contacts)
+        for field_type in ("bday", "adr", "org", "note", "url"):
+            row = self.conn.execute(
+                """SELECT COUNT(DISTINCT cf.contact_id) as n FROM contact_fields cf
+                   JOIN contacts c ON cf.contact_id = c.id
+                   WHERE cf.field_type = ? AND c.is_active = 1""",
+                (field_type,),
+            ).fetchone()
+            stats[f"with_{field_type}"] = row["n"]
+
+        # Per-category field counts
+        for cat, field_type in [
+            ("real", "email"), ("real", "tel"), ("real", "photo"),
+            ("real", "bday"), ("real", "adr"),
+            ("stub", "email"), ("stub", "tel"),
+            ("spam", "email"),
+        ]:
+            if field_type == "photo":
+                row = self.conn.execute(
+                    """SELECT COUNT(DISTINCT p.contact_id) as n FROM photos p
+                       JOIN contacts c ON p.contact_id = c.id
+                       WHERE c.is_active = 1 AND c.category = ?""",
+                    (cat,),
+                ).fetchone()
+            else:
+                row = self.conn.execute(
+                    """SELECT COUNT(DISTINCT cf.contact_id) as n FROM contact_fields cf
+                       JOIN contacts c ON cf.contact_id = c.id
+                       WHERE cf.field_type = ? AND c.is_active = 1 AND c.category = ?""",
+                    (field_type, cat),
+                ).fetchone()
+            stats[f"{cat}_with_{field_type}"] = row["n"]
+
         return stats
+
+    def log_pipeline_run(self, command: str, data: dict):
+        """Store pipeline run data as metadata with timestamp."""
+        from datetime import datetime
+        data["timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.set_metadata(f"run_{command}", json.dumps(data))
+
+    def get_pipeline_runs(self) -> dict:
+        """Read all run_* metadata keys, return {command: data_dict}."""
+        rows = self.conn.execute(
+            "SELECT key, value FROM metadata WHERE key LIKE 'run_%'"
+        ).fetchall()
+        runs = {}
+        for row in rows:
+            command = row["key"][4:]  # strip "run_"
+            runs[command] = json.loads(row["value"])
+        return runs
+
+    def get_category_breakdown(self) -> dict[str, int]:
+        """Count contacts per CATEGORIES value (active real contacts)."""
+        rows = self.conn.execute(
+            """SELECT cf.field_value, COUNT(DISTINCT cf.contact_id) as n
+               FROM contact_fields cf
+               JOIN contacts c ON cf.contact_id = c.id
+               WHERE cf.field_type = 'categories' AND c.is_active = 1 AND c.category = 'real'
+               GROUP BY cf.field_value
+               ORDER BY n DESC"""
+        ).fetchall()
+        return {row["field_value"]: row["n"] for row in rows}
+
+    def delete_category_from_all(self, category_value: str) -> int:
+        """Delete a specific CATEGORIES field value from all contacts.
+
+        Returns the number of fields deleted.
+        """
+        cur = self.conn.execute(
+            """DELETE FROM contact_fields
+               WHERE field_type = 'categories' AND field_value = ?""",
+            (category_value,),
+        )
+        self.conn.commit()
+        return cur.rowcount
 
     def get_contacts_by_category(self, category: str) -> list[Contact]:
         rows = self.conn.execute(

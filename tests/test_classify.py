@@ -31,9 +31,52 @@ def test_classify_spam():
     assert classify_contact(c) == "spam"
 
 
-def test_classify_real_with_name_only():
-    """Contact with structured name but no email/phone is still real."""
+def test_classify_name_only_is_stub():
+    """Contact with structured name but no phone/photo/address is a stub."""
     c = Contact(fn="Hans Mueller", family_name="Mueller", given_name="Hans")
+    assert classify_contact(c) == "stub"
+
+
+def test_classify_name_and_email_only_is_stub():
+    """Contact with name + email but no phone/photo/address is a stub."""
+    c = Contact(fn="David Jud", family_name="Jud", given_name="David")
+    c.fields.append(ContactField("email", "d.jud@meierpartner.ch"))
+    assert classify_contact(c) == "stub"
+
+
+def test_classify_name_and_org_only_is_stub():
+    """Contact with name + org but no phone/photo/address is a stub."""
+    c = Contact(fn="Test", family_name="Test", given_name="Person")
+    c.fields.append(ContactField("org", "ACME Corp"))
+    assert classify_contact(c) == "stub"
+
+
+def test_classify_name_and_phone_is_real():
+    """Contact with name + phone is real."""
+    c = Contact(fn="Hans", family_name="Mueller", given_name="Hans")
+    c.fields.append(ContactField("tel", "+41791234567"))
+    assert classify_contact(c) == "real"
+
+
+def test_classify_name_and_address_is_real():
+    """Contact with name + address is real."""
+    c = Contact(fn="Hans", family_name="Mueller", given_name="Hans")
+    c.fields.append(ContactField("adr", ";;Street;City;;1234;CH"))
+    assert classify_contact(c) == "real"
+
+
+def test_classify_phone_only_no_name_is_real():
+    """Contact with phone but no name is still real (reachable)."""
+    c = Contact(fn="")
+    c.fields.append(ContactField("tel", "+41791234567"))
+    assert classify_contact(c) == "real"
+
+
+def test_classify_spam_with_phone_is_real():
+    """Spam email + phone → real (phone makes it contactable)."""
+    c = Contact(fn="newsletter@bigshop.com")
+    c.fields.append(ContactField("email", "newsletter@bigshop.com"))
+    c.fields.append(ContactField("tel", "+41791234567"))
     assert classify_contact(c) == "real"
 
 

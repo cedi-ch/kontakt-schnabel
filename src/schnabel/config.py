@@ -45,10 +45,11 @@ SPAM_DOMAINS = {
     "noreply.com", "example.com", "example.org",
 }
 
-# Matching weights
-WEIGHT_EMAIL = 0.40
-WEIGHT_PHONE = 0.35
-WEIGHT_NAME = 0.15
+# Matching weights (must sum to 1.0)
+WEIGHT_EMAIL = 0.35
+WEIGHT_PHONE = 0.30
+WEIGHT_NAME = 0.13
+WEIGHT_BDAY = 0.12
 WEIGHT_PHOTO = 0.08
 WEIGHT_ADDRESS = 0.02
 
@@ -56,4 +57,5 @@ WEIGHT_ADDRESS = 0.02
 ANCHOR_MIN_SHARED_EMAIL_OR_PHONE = 0.70
 ANCHOR_MIN_SHARED_EMAIL_AND_PHONE = 0.95
 ANCHOR_MIN_SHARED_CONTACT_AND_NAME = 0.85  # shared email/phone + high name match
+ANCHOR_MIN_SHARED_BDAY_AND_NAME = 0.80     # shared birthday + similar name
 ANCHOR_MAX_NAME_ONLY = 0.60

@@ -436,6 +436,7 @@ def run_tui(db: Database, auto_merged: int = 0):
                 db.update_pair_resolution(pair["id"], "manual_merged")
                 history.append((idx, "merge", mid))
                 merge_id_stack.append(mid)
+                _inline_address_chooser(db, survivor_id)
                 idx += 1
                 break
 
@@ -447,6 +448,7 @@ def run_tui(db: Database, auto_merged: int = 0):
                 db.update_pair_resolution(pair["id"], "manual_merged")
                 history.append((idx, "merge", mid))
                 merge_id_stack.append(mid)
+                _inline_address_chooser(db, pair["contact_a_id"])
                 idx += 1
                 break
 
@@ -458,6 +460,7 @@ def run_tui(db: Database, auto_merged: int = 0):
                 db.update_pair_resolution(pair["id"], "manual_merged")
                 history.append((idx, "merge", mid))
                 merge_id_stack.append(mid)
+                _inline_address_chooser(db, pair["contact_b_id"])
                 idx += 1
                 break
 
@@ -592,3 +595,110 @@ def run_tui(db: Database, auto_merged: int = 0):
     stats = db.get_stats()
     console.print(f"\n[bold]Session complete.[/bold] Active contacts: {stats['active']}, "
                   f"Merges total: {stats['merges']}")
+
+
+# -- Address chooser --
+
+def _inline_address_chooser(db: Database, contact_id: int) -> bool:
+    """Prompt user to pick one address when a contact has multiple.
+
+    Returns True if an address was chosen, False if skipped.
+    """
+    from schnabel.sanitize import format_address_display, resolve_multi_addresses
+
+    contact = db.get_contact(contact_id)
+    if not contact:
+        return False
+
+    addr_fields = [(f.id, f.field_value) for f in contact.fields if f.field_type == "adr"]
+    if len(addr_fields) < 2:
+        return False
+
+    # Dedup by key to check if they're actually distinct
+    from schnabel.sanitize import _address_key
+    keys = {_address_key(v): i for i, (_, v) in enumerate(addr_fields)}
+    if len(keys) < 2:
+        return False
+
+    console.print(f"\n  [bold yellow]{contact.fn}[/bold yellow] — {len(addr_fields)} Adressen:")
+    for i, (_, val) in enumerate(addr_fields):
+        display = format_address_display(val)
+        console.print(f"  [bold green][{i + 1}][/bold green] {display}")
+
+    keys_str = "/".join(str(i + 1) for i in range(len(addr_fields)))
+    console.print(f"  {keys_str}=behalten  [bold yellow]a[/bold yellow]=alle behalten: ", end="")
+
+    key = readchar.readchar()
+    console.print(key)
+
+    if key == "a":
+        return False
+
+    try:
+        choice = int(key) - 1
+        if 0 <= choice < len(addr_fields):
+            archived = resolve_multi_addresses(db, contact_id, choice)
+            display = format_address_display(addr_fields[choice][1])
+            console.print(f"  [green]→ {display}[/green]  ({archived} archiviert)")
+            return True
+    except (ValueError, IndexError):
+        pass
+
+    return False
+
+
+def address_chooser(db: Database, contact_ids: list[int]) -> int:
+    """Batch address chooser for contacts with multiple addresses.
+
+    Returns number of contacts where addresses were resolved.
+    """
+    from schnabel.sanitize import format_address_display, resolve_multi_addresses, _address_key
+
+    resolved = 0
+    total = len(contact_ids)
+
+    for i, cid in enumerate(contact_ids):
+        contact = db.get_contact(cid)
+        if not contact:
+            continue
+
+        addr_fields = [(f.id, f.field_value) for f in contact.fields if f.field_type == "adr"]
+        if len(addr_fields) < 2:
+            continue
+
+        # Skip if all addresses have same key (dedup will handle them)
+        keys = {_address_key(v) for _, v in addr_fields}
+        if len(keys) < 2:
+            continue
+
+        console.print(f"\n{'─' * 50}")
+        console.print(f"  [bold cyan]{contact.fn}[/bold cyan] (#{cid}) — "
+                      f"{len(addr_fields)} Adressen  [{i + 1}/{total}]")
+
+        for j, (_, val) in enumerate(addr_fields):
+            display = format_address_display(val)
+            console.print(f"  [bold green][{j + 1}][/bold green] {display}")
+
+        keys_str = "/".join(str(j + 1) for j in range(len(addr_fields)))
+        console.print(f"  {keys_str}=behalten  [bold yellow]a[/bold yellow]=alle  "
+                      f"[dim]q[/dim]=fertig: ", end="")
+
+        key = readchar.readchar()
+        console.print(key)
+
+        if key == "q":
+            break
+        if key == "a":
+            continue
+
+        try:
+            choice = int(key) - 1
+            if 0 <= choice < len(addr_fields):
+                archived = resolve_multi_addresses(db, cid, choice)
+                display = format_address_display(addr_fields[choice][1])
+                console.print(f"  [green]→ {display}[/green]  ({archived} archiviert)")
+                resolved += 1
+        except (ValueError, IndexError):
+            pass
+
+    return resolved

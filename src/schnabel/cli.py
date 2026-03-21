@@ -16,10 +16,75 @@ def get_db(db_path: Path) -> "Database":
     return Database(db_path)
 
 
+def _print_help_all(ctx):
+    """Print expanded help for every command, then exit."""
+    import sys
+
+    group = ctx.command
+    console.print("[bold cyan]kontakt-schnabel[/bold cyan] — comprehensive command reference\n")
+
+    # Global options from the group itself
+    console.print("[bold]Global options:[/bold]")
+    for param in group.params:
+        if isinstance(param, click.Option):
+            opts = ", ".join(param.opts)
+            console.print(f"  [green]{opts}[/green]  {param.help or ''}")
+    console.print()
+
+    # Pipeline order header
+    console.print("[bold]Pipeline order:[/bold]")
+    console.print("  import → analyze → normalize → sanitize → match → dedup → categorize → export\n")
+
+    # Iterate all subcommands
+    commands = group.list_commands(ctx)
+    for cmd_name in commands:
+        cmd = group.get_command(ctx, cmd_name)
+        if cmd is None:
+            continue
+
+        # Command name + short description (first line of docstring)
+        help_text = cmd.get_short_help_str(limit=300)
+        console.print(f"[bold cyan]schnabel {cmd_name}[/bold cyan]  —  {help_text}")
+
+        # Full docstring (if longer than short help)
+        if cmd.help:
+            full = cmd.help.strip()
+            lines = full.split("\n")
+            if len(lines) > 1:
+                for line in lines[1:]:
+                    stripped = line.strip()
+                    if stripped:
+                        console.print(f"  [dim]{stripped}[/dim]")
+
+        # Options and arguments
+        for param in cmd.params:
+            if isinstance(param, click.Argument):
+                name = param.human_readable_name
+                req = "" if param.required else " (optional)"
+                console.print(f"  [green]{name}[/green]{req}")
+            elif isinstance(param, click.Option):
+                opts = ", ".join(param.opts)
+                default = ""
+                show_default = (param.default is not None
+                                and param.default is not False
+                                and param.default != ""
+                                and "Sentinel" not in str(type(param.default)))
+                if show_default:
+                    default = f" [dim](default: {param.default})[/dim]"
+                console.print(f"  [green]{opts}[/green]  {param.help or ''}{default}")
+
+        console.print()
+
+    sys.exit(0)
+
+
 @click.group()
 @click.option("--db", "db_path", type=click.Path(), default=str(DEFAULT_DB_PATH),
               help="Path to SQLite database.")
 @click.option("--no-export", is_flag=True, help="Skip automatic VCF export after data changes.")
+@click.option("--help-all", "help_all", is_flag=True, is_eager=True, expose_value=False,
+              callback=lambda ctx, param, value: _print_help_all(ctx) if value else None,
+              help="Show expanded help for all commands.")
 @click.pass_context
 def cli(ctx, db_path, no_export):
     """kontakt-schnabel: merge, deduplicate, and sanitize vCard files.
@@ -99,12 +164,22 @@ def import_cmd(ctx, files, input_dir):
                 f"(enc: {encoding})"
             )
 
-    console.print(f"\n[bold green]Imported {total_contacts} contacts "
-                  f"from {total_files} files.[/bold green]")
-
-    # Show classification summary
     stats = db.get_stats()
-    _print_stats_table(stats)
+    skipped = len(file_paths) - total_files
+    _print_module_report("Import", [
+        ("Files parsed", str(total_files)),
+        ("Skipped", str(skipped), "dim"),
+        ("Contacts imported", str(total_contacts), "bold"),
+        ("─ Real", str(stats["real"]), "green"),
+        ("─ Stubs", str(stats["stub"]), "yellow"),
+        ("─ Spam", str(stats["spam"]), "red"),
+    ])
+
+    db.log_pipeline_run("import", {
+        "files": total_files, "skipped": skipped,
+        "contacts": total_contacts,
+        "real": stats["real"], "stubs": stats["stub"], "spam": stats["spam"],
+    })
     db.close()
 
     _log_session_event("import", f"{total_contacts} contacts from {total_files} files")
@@ -117,10 +192,16 @@ def import_cmd(ctx, files, input_dir):
 @click.option("-v", "--verbose", is_flag=True, help="Show detailed breakdown.")
 @click.pass_context
 def analyze(ctx, verbose):
-    """Show contact statistics and analysis."""
+    """Show contact content analysis: field coverage for Real, Stubs, Spam."""
     db = get_db(ctx.obj["db_path"])
     stats = db.get_stats()
-    _print_stats_table(stats)
+
+    console.print(f"\n[bold cyan]Analyze[/bold cyan]  "
+                  f"[green]{stats['real']} real[/green]  "
+                  f"[yellow]{stats['stub']} stubs[/yellow]  "
+                  f"[red]{stats['spam']} spam[/red]\n")
+
+    _print_analyze(db)
 
     if verbose:
         console.print("\n[bold]Category breakdown:[/bold]")
@@ -159,7 +240,11 @@ def normalize(ctx):
 
         normalize_contacts(db, progress_callback=progress)
 
-    console.print(f"[bold green]Normalized {stats['active']} contacts.[/bold green]")
+    _print_module_report("Normalize", [
+        ("Contacts normalized", str(stats['active']), "green"),
+    ])
+
+    db.log_pipeline_run("normalize", {"contacts": stats['active']})
     db.close()
 
     _log_session_event("normalize", f"{stats['active']} contacts normalized")
@@ -169,8 +254,10 @@ def normalize(ctx):
 # ── Sanitize ───────────────────────────────────────────────────────────────
 
 @cli.command()
+@click.option("--addresses", is_flag=True,
+              help="Also resolve contacts with multiple addresses interactively.")
 @click.pass_context
-def sanitize(ctx):
+def sanitize(ctx, addresses):
     """Sanitize contacts: deduplicate phones, emails, addresses within each contact."""
     from schnabel.sanitize import sanitize_contacts
 
@@ -234,7 +321,12 @@ def sanitize(ctx):
 
     # Show report as Rich table
     from rich.table import Table
-    table = Table(title="Sanitize Report", show_header=True, border_style="cyan")
+    label_map = {
+        "empty": "Empty", "tel": "Phone", "email": "Email",
+        "adr": "Address", "url": "URL", "text": "Names",
+        "bday": "Birthday", "type": "Type",
+    }
+    table = Table(title="[bold cyan]Sanitize[/bold cyan]", show_header=True, border_style="cyan")
     table.add_column("Type", style="bold")
     table.add_column("Removed", justify="right", style="red")
     table.add_column("Reformatted", justify="right", style="yellow")
@@ -243,7 +335,7 @@ def sanitize(ctx):
         removed = report.removed.get(key, 0)
         reformatted = report.reformatted.get(key, 0)
         if removed > 0 or reformatted > 0:
-            table.add_row(key.upper(), str(removed), str(reformatted))
+            table.add_row(label_map.get(key, key.upper()), str(removed), str(reformatted))
 
     if report.total_removed > 0 or report.total_reformatted > 0:
         table.add_row("TOTAL", str(report.total_removed), str(report.total_reformatted),
@@ -252,6 +344,22 @@ def sanitize(ctx):
     else:
         console.print("[green]Alle Kontakte bereits sauber — keine Änderungen.[/green]")
 
+    if addresses:
+        from schnabel.sanitize import find_contacts_with_multi_addresses
+        from schnabel.tui import address_chooser
+        multi_addr_ids = find_contacts_with_multi_addresses(db)
+        if multi_addr_ids:
+            console.print(f"\n[bold yellow]{len(multi_addr_ids)} Kontakte mit mehreren Adressen.[/bold yellow]")
+            resolved_addrs = address_chooser(db, multi_addr_ids)
+            if resolved_addrs:
+                console.print(f"[green]{resolved_addrs} Kontakte aufgeräumt.[/green]")
+        else:
+            console.print("[green]Keine Kontakte mit mehreren Adressen.[/green]")
+
+    db.log_pipeline_run("sanitize", {
+        "removed_total": report.total_removed,
+        "reformatted_total": report.total_reformatted,
+    })
     db.close()
 
     summary = f"{report.total_removed} removed, {report.total_reformatted} reformatted"
@@ -287,18 +395,21 @@ def match(ctx, min_confidence):
 
         stored = run_matching(db, min_confidence=min_confidence, progress_callback=progress)
 
-    console.print(f"[bold green]Found {stored} candidate pairs.[/bold green]")
-
-    # Show distribution
     pairs = db.get_pending_pairs()
-    if pairs:
-        high = sum(1 for p in pairs if p["confidence"] >= 0.90)
-        med = sum(1 for p in pairs if 0.70 <= p["confidence"] < 0.90)
-        low = sum(1 for p in pairs if p["confidence"] < 0.70)
-        console.print(f"  [green]High (≥90%): {high}[/green]  "
-                      f"[yellow]Medium (70–90%): {med}[/yellow]  "
-                      f"[red]Low (<70%): {low}[/red]")
+    high = sum(1 for p in pairs if p["confidence"] >= 0.90)
+    med = sum(1 for p in pairs if 0.70 <= p["confidence"] < 0.90)
+    low = sum(1 for p in pairs if p["confidence"] < 0.70)
 
+    _print_module_report("Match", [
+        ("Candidate pairs", str(stored), "bold"),
+        ("─ High (≥90%)", str(high), "green"),
+        ("─ Medium (70–90%)", str(med), "yellow"),
+        ("─ Low (<70%)", str(low), "red"),
+    ])
+
+    db.log_pipeline_run("match", {
+        "total": stored, "high": high, "medium": med, "low": low,
+    })
     db.close()
 
 
@@ -337,10 +448,30 @@ def dedup(ctx, auto_only, aggressiveness, pending):
 
         console.print(f"[bold green]Auto-merged {merged} pairs.[/bold green]")
 
+        # Check for multi-address contacts after auto-merge
+        from schnabel.sanitize import find_contacts_with_multi_addresses
+        from schnabel.tui import address_chooser
+        multi_addr_ids = find_contacts_with_multi_addresses(db)
+        if multi_addr_ids:
+            console.print(f"\n[bold yellow]{len(multi_addr_ids)} Kontakte mit mehreren Adressen.[/bold yellow]")
+            resolved = address_chooser(db, multi_addr_ids)
+            if resolved:
+                console.print(f"[green]{resolved} Kontakte aufgeräumt.[/green]")
+
     if auto_only:
         stats = db.get_stats()
-        console.print(f"Remaining pending pairs: {stats['pending_pairs']}")
-        _print_stats_table(stats)
+        pending_count = stats['pending_pairs']
+        _print_module_report("Dedup", [
+            ("Pairs processed", str(merged + pending_count), "bold"),
+            ("Merged", str(merged), "green"),
+            ("Pending", str(pending_count), "yellow"),
+            ("Active contacts", str(stats['active'])),
+        ])
+        db.log_pipeline_run("dedup", {
+            "processed": merged + pending_count, "merged": merged,
+            "skipped": 0, "pending": pending_count,
+            "before": stats['total'], "after": stats['active'],
+        })
         db.close()
         _log_session_event("dedup", f"{merged} auto-merged (--auto-only)")
         _auto_export(ctx, "dedup")
@@ -353,6 +484,13 @@ def dedup(ctx, auto_only, aggressiveness, pending):
     # TUI phase
     from schnabel.tui import run_tui
     run_tui(db, auto_merged=merged)
+
+    stats = db.get_stats()
+    db.log_pipeline_run("dedup", {
+        "processed": merged + stats.get('merges', 0), "merged": stats.get('merges', 0),
+        "skipped": 0, "pending": stats['pending_pairs'],
+        "before": stats['total'], "after": stats['active'],
+    })
     db.close()
 
     _log_session_event("dedup", f"{merged} auto-merged + TUI session")
@@ -426,13 +564,22 @@ def export(ctx, output_dir, normalize_photos, max_lines, by_category, no_preview
             counts = export_contacts(db, output_path, normalize_photos=normalize_photos,
                                      max_lines=max_lines)
 
-    console.print(f"\n[bold green]Export complete → {output_path}/[/bold green]")
+    rows = []
     for category, count in counts.items():
-        console.print(f"  {category}: {count} contacts")
+        style = {"real": "green", "stub": "yellow", "spam": "red"}.get(category, "dim")
+        rows.append((category.capitalize(), str(count), style))
+    rows.append(("Path", str(output_path), "dim"))
+
     if max_lines > 0:
         from glob import glob
         files = sorted(glob(str(output_path / "*.vcf")))
-        console.print(f"\n  Split into {len(files)} files (max {max_lines} lines each)")
+        rows.append(("Files", str(len(files))))
+
+    _print_module_report("Export", rows)
+
+    db.log_pipeline_run("export", {
+        "files": dict(counts), "path": str(output_path),
+    })
     db.close()
     _log_session_event("export", f"{sum(counts.values())} contacts → {output_path}")
 
@@ -464,41 +611,44 @@ def photos(ctx, extract_dir):
 @cli.command()
 @click.pass_context
 def status(ctx):
-    """Show overall pipeline status."""
+    """Show session overview: pipeline runs + content analysis."""
     db = get_db(ctx.obj["db_path"])
     stats = db.get_stats()
 
-    console.print("\n[bold cyan]kontakt-schnabel status[/bold cyan]\n")
-    _print_stats_table(stats)
-
-    # Pipeline progress
-    console.print("\n[bold]Pipeline:[/bold]")
-    steps = [
-        ("Import", stats["total"] > 0),
-        ("Classify", stats["real"] + stats["stub"] + stats["spam"] > 0),
-        ("Normalize", True),  # can't easily check
-        ("Sanitize", True),  # can't easily check
-        ("Match", stats["pending_pairs"] > 0 or stats["merges"] > 0),
-        ("Dedup", stats["merges"] > 0),
-        ("Export", False),  # can't easily check
+    # Session section
+    session_start = db.get_metadata("session_start")
+    session_rows = [
+        ("Started", session_start or "(no reset)", "dim"),
+        ("Total imported", str(stats["total"])),
+        ("Active contacts", str(stats["active"]), "bold"),
     ]
-    for name, done in steps:
-        icon = "[green]✓[/green]" if done else "[dim]○[/dim]"
-        console.print(f"  {icon} {name}")
+    _print_module_report("Session", session_rows)
 
-    # Recent merges
-    merges = db.get_recent_merges(5)
-    if merges:
-        console.print("\n[bold]Recent merges:[/bold]")
-        for m in merges:
-            survivor = db.get_contact(m["survivor_id"])
-            absorbed = db.get_contact(m["absorbed_id"])
-            s_name = survivor.fn if survivor else f"#{m['survivor_id']}"
-            a_name = absorbed.fn if absorbed else f"#{m['absorbed_id']}"
-            console.print(
-                f"  #{m['id']}: {a_name} → {s_name} "
-                f"({m['merge_type']}, {m['confidence']:.0%})"
-            )
+    # Pipeline Runs section
+    runs = db.get_pipeline_runs()
+    if runs:
+        run_rows = []
+        run_labels = {
+            "import": lambda d: f"{d.get('contacts', '?')} contacts from {d.get('files', '?')} files",
+            "normalize": lambda d: f"{d.get('contacts', '?')} contacts",
+            "sanitize": lambda d: f"{d.get('removed_total', 0)} removed, {d.get('reformatted_total', 0)} reformatted",
+            "match": lambda d: f"{d.get('total', '?')} pairs ({d.get('high', 0)}h/{d.get('medium', 0)}m/{d.get('low', 0)}l)",
+            "dedup": lambda d: f"{d.get('merged', 0)} merged, {d.get('pending', 0)} pending",
+            "categorize": lambda d: f"{d.get('assigned', 0)} assigned",
+            "export": lambda d: f"{sum(d.get('files', {}).values()) if isinstance(d.get('files'), dict) else '?'} contacts",
+        }
+        for cmd, data in runs.items():
+            label_fn = run_labels.get(cmd)
+            summary = label_fn(data) if label_fn else str(data)
+            ts = data.get("timestamp", "")
+            run_rows.append((cmd, f"{summary}  [dim]{ts}[/dim]"))
+        _print_module_report("Pipeline Runs", run_rows)
+    else:
+        console.print("\n[dim]No pipeline runs recorded yet.[/dim]")
+
+    # Full analyze output
+    console.print()
+    _print_analyze(db)
 
     db.close()
 
@@ -585,6 +735,56 @@ def reset(ctx, confirm):
 
     console.print("[bold green]Datenbank zurückgesetzt. Neue Session gestartet.[/bold green]")
     _log_session_event("reset", "database reset")
+
+
+# ── Reclassify ─────────────────────────────────────────────────────────────
+
+@cli.command()
+@click.option("--dry-run", is_flag=True, help="Show what would change without applying.")
+@click.pass_context
+def reclassify(ctx, dry_run):
+    """Reclassify all active contacts with current rules.
+
+    Use after classification rule changes to update existing contacts.
+    Real requires phone, photo, or address. Name-only/email-only → stub.
+    """
+    from schnabel.classify import classify_contact
+
+    db = get_db(ctx.obj["db_path"])
+    contacts = db.get_all_active_contacts()
+
+    transitions: dict[str, int] = {}
+    changes: list[tuple[int, str, str]] = []
+
+    for c in contacts:
+        new_cat = classify_contact(c)
+        if new_cat != c.category:
+            key = f"{c.category} → {new_cat}"
+            transitions[key] = transitions.get(key, 0) + 1
+            changes.append((c.id, c.category, new_cat))
+
+    if not changes:
+        console.print("[green]Keine Änderungen — alle Kontakte korrekt klassifiziert.[/green]")
+        db.close()
+        return
+
+    rows = [(k, str(v)) for k, v in sorted(transitions.items())]
+    _print_module_report("Reclassify" + (" (dry run)" if dry_run else ""), rows)
+
+    if dry_run:
+        console.print(f"\n[dim]{len(changes)} Kontakte würden geändert.[/dim]")
+        db.close()
+        return
+
+    for cid, _old, new_cat in changes:
+        db.update_contact_category(cid, new_cat)
+    db.commit()
+
+    console.print(f"\n[bold green]{len(changes)} Kontakte reklassifiziert.[/bold green]")
+    db.close()
+
+    _log_session_event("reclassify", f"{len(changes)} contacts reclassified")
+    _auto_export(ctx, "reclassify")
 
 
 # ── Rawparse ───────────────────────────────────────────────────────────────
@@ -953,19 +1153,38 @@ def pdf(input_file, output_file, title):
 @cli.command()
 @click.option("--uncategorized", is_flag=True,
               help="Only show contacts without any categories.")
+@click.option("--purge", type=str, default=None,
+              help="Delete a specific category from ALL contacts (bulk cleanup).")
 @click.pass_context
-def categorize(ctx, uncategorized):
+def categorize(ctx, uncategorized, purge):
     """Interactively assign categories to contacts."""
+    db = get_db(ctx.obj["db_path"])
+
+    if purge:
+        _purge_category(db, purge)
+        db.close()
+        _log_session_event("categorize", f"purged category '{purge}'")
+        _auto_export(ctx, "categorize")
+        return
+
     from schnabel.cattui import run_categorize_tui
 
-    db = get_db(ctx.obj["db_path"])
     stats = db.get_stats()
     if stats["real"] == 0:
-        console.print("[red]Keine 'real'-Kontakte. Zuerst 'schnabel import' ausf\u00fchren.[/red]")
+        console.print("[red]Keine 'real'-Kontakte. Zuerst 'schnabel import' ausführen.[/red]")
         db.close()
         return
 
     run_categorize_tui(db, uncategorized_only=uncategorized)
+
+    # Log pipeline run with category breakdown
+    breakdown = db.get_category_breakdown()
+    stats = db.get_stats()
+    db.log_pipeline_run("categorize", {
+        "reviewed": stats["real"],
+        "assigned": stats["contacts_with_categories"],
+        "categories": breakdown,
+    })
     db.close()
 
     _log_session_event("categorize", "category assignment session")
@@ -1042,6 +1261,57 @@ def split_export(ctx, output_dir, no_rest):
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
+def _purge_category(db, category_value: str):
+    """Delete a specific category from all contacts, with confirmation."""
+    # Check if this category actually exists
+    all_cats = db.get_all_category_values()
+    # Case-insensitive match
+    match = None
+    for cat in all_cats:
+        if cat == category_value:
+            match = cat
+            break
+        if cat.lower() == category_value.lower():
+            match = cat
+            break
+
+    if not match:
+        console.print(f"[red]Kategorie '{category_value}' nicht gefunden.[/red]")
+        if all_cats:
+            console.print(f"\n[dim]Vorhandene Kategorien:[/dim]")
+            for cat in all_cats:
+                console.print(f"  {cat}")
+        return
+
+    # Count affected contacts
+    breakdown = db.get_category_breakdown()
+    count = breakdown.get(match, 0)
+    # Also count stubs/spam that might have it
+    row = db.conn.execute(
+        """SELECT COUNT(DISTINCT cf.contact_id) as n FROM contact_fields cf
+           JOIN contacts c ON cf.contact_id = c.id
+           WHERE cf.field_type = 'categories' AND cf.field_value = ? AND c.is_active = 1""",
+        (match,),
+    ).fetchone()
+    total_affected = row["n"]
+
+    console.print(f"\n[bold yellow]Kategorie löschen:[/bold yellow] {match}")
+    console.print(f"  Betroffen: [bold]{total_affected}[/bold] Kontakte")
+
+    try:
+        answer = input("\nFortfahren? (ja/nein): ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        console.print("\n[yellow]Abgebrochen.[/yellow]")
+        return
+
+    if answer not in ("ja", "j", "yes", "y"):
+        console.print("[yellow]Abgebrochen.[/yellow]")
+        return
+
+    deleted = db.delete_category_from_all(match)
+    console.print(f"[bold green]'{match}' entfernt aus {deleted} Kontakten.[/bold green]")
+
+
 def _auto_export(ctx, command_name: str):
     """Auto-export contacts to a timestamped directory after a data-changing command."""
     if ctx.obj.get("no_export"):
@@ -1072,6 +1342,85 @@ def _log_session_event(command: str, summary: str):
     entry = f"{timestamp} {command}: {summary}\n"
     with open(log_path, "a", encoding="utf-8") as f:
         f.write(entry)
+
+
+def _print_module_report(title: str, rows: list, border_style: str = "cyan"):
+    """Print a Rich Table for a module report.
+
+    rows: list of (label, value) or (label, value, style) tuples.
+    """
+    table = Table(title=f"[bold {border_style}]{title}[/bold {border_style}]",
+                  show_header=False, border_style=border_style)
+    table.add_column("Metric", style="bold")
+    table.add_column("Value", justify="right")
+
+    for row in rows:
+        if len(row) == 3:
+            table.add_row(str(row[0]), str(row[1]), style=row[2])
+        else:
+            table.add_row(str(row[0]), str(row[1]))
+
+    console.print(table)
+
+
+def _print_analyze(db):
+    """Print the analyze output: Real/Stubs/Spam content tables."""
+    stats = db.get_stats()
+
+    # Real Contacts
+    real_table = Table(title="[bold green]Real Contacts[/bold green]",
+                       show_header=False, border_style="green")
+    real_table.add_column("Metric L", style="bold")
+    real_table.add_column("Value L", justify="right")
+    real_table.add_column("Metric R", style="bold")
+    real_table.add_column("Value R", justify="right")
+
+    real_table.add_row(
+        "With phone", str(stats.get("real_with_tel", 0)),
+        "Unique emails", str(stats["unique_emails"]),
+    )
+    real_table.add_row(
+        "With email", str(stats.get("real_with_email", 0)),
+        "Unique phones", str(stats["unique_phones"]),
+    )
+    real_table.add_row(
+        "With photo", str(stats.get("real_with_photo", 0)),
+        "With org", str(stats.get("with_org", 0)),
+    )
+    real_table.add_row(
+        "With birthday", str(stats.get("real_with_bday", 0)),
+        "With note", str(stats.get("with_note", 0)),
+    )
+    real_table.add_row(
+        "With address", str(stats.get("real_with_adr", 0)),
+        "With URL", str(stats.get("with_url", 0)),
+    )
+    real_table.add_row(
+        "With categories", str(stats.get("contacts_with_categories", 0)),
+        "", "",
+    )
+
+    console.print(real_table)
+
+    # Top 5 categories
+    breakdown = db.get_category_breakdown()
+    if breakdown:
+        top5 = list(breakdown.items())[:5]
+        parts = [f"{name} ({count})" for name, count in top5]
+        console.print(f"  [dim]Top categories: {', '.join(parts)}[/dim]")
+
+    # Stubs
+    stub_rows = [
+        ("With email", str(stats.get("stub_with_email", 0))),
+        ("With phone", str(stats.get("stub_with_tel", 0))),
+    ]
+    _print_module_report("Stubs", stub_rows, border_style="yellow")
+
+    # Spam
+    spam_rows = [
+        ("With email", str(stats.get("spam_with_email", 0))),
+    ]
+    _print_module_report("Spam", spam_rows, border_style="red")
 
 
 def _print_stats_table(stats: dict):
