@@ -1100,8 +1100,17 @@ def birthdays(ctx, output_file, missing, years):
     # Reminder config
     reminders = run_reminder_config_tui()
 
+    # Years
+    console.print(f"\n  Zeitraum in Jahren (Enter={years}): ", end="")
+    try:
+        years_input = input().strip()
+        if years_input:
+            years = int(years_input)
+    except (ValueError, EOFError, KeyboardInterrupt):
+        pass
+
     # Confirm
-    console.print(f"\n  [bold]{len(entries)}[/bold] Kontakte × [bold]{years}[/bold] Jahre "
+    console.print(f"  [bold]{len(entries)}[/bold] Kontakte × [bold]{years}[/bold] Jahre "
                   f"= [bold]{len(entries) * years}[/bold] Events")
     import readchar
     console.print("  Exportieren? [green]Enter[/green]=ja  [dim]q[/dim]=abbrechen: ", end="")
