@@ -33,7 +33,7 @@ def _print_help_all(ctx):
 
     # Pipeline order header
     console.print("[bold]Pipeline order:[/bold]")
-    console.print("  import → analyze → normalize → sanitize → match → dedup → categorize → export\n")
+    console.print("  import → analyze → normalize → sanitize → match → dedup → categorize → split → export\n")
 
     # Iterate all subcommands
     commands = group.list_commands(ctx)
@@ -98,7 +98,11 @@ def cli(ctx, db_path, no_export):
       5. match       Find duplicate candidate pairs
       6. dedup       Auto-merge + interactive review
       7. categorize  Assign categories (optional)
-      8. export      Export clean vCard 3.0 files
+      8. split       Split into target files (optional, from DB or VCF)
+      9. export      Export clean vCard 3.0 files
+
+    \b
+    Utilities: birthdays, reclassify, compare, rawparse, pdf, photos, status, stats
     """
     ctx.ensure_object(dict)
     ctx.obj["db_path"] = Path(db_path)
@@ -1004,6 +1008,90 @@ def rawparse(ctx, input_file, output_file, db_import, auto_accept, pending):
         _auto_export(ctx, "rawparse")
 
 
+# ── Birthdays ──────────────────────────────────────────────────────────────
+
+@cli.command()
+@click.option("-o", "--output", "output_file", type=click.Path(), default=None,
+              help="Output ICS file path (default: output/geburtstage.ics).")
+@click.option("--missing", is_flag=True,
+              help="Show contacts WITHOUT birthday instead of exporting.")
+@click.option("--years", type=int, default=100,
+              help="Number of years to generate events for (default: 100).")
+@click.pass_context
+def birthdays(ctx, output_file, missing, years):
+    """Export birthdays as ICS calendar file, filtered by categories.
+
+    \b
+    Reads from the database — import contacts first:
+      schnabel import kontakte-eva.vcf
+      schnabel birthdays -o eva-geburtstage.ics
+    """
+    from schnabel.birthday import (
+        generate_ics, get_birthday_contacts, get_missing_birthday_contacts,
+        print_birthday_preview, print_missing_preview,
+        run_category_selection_tui, run_reminder_config_tui,
+    )
+
+    db = get_db(ctx.obj["db_path"])
+
+    # Category selection TUI
+    result = run_category_selection_tui(db)
+    if result is None:
+        console.print("[yellow]Abgebrochen.[/yellow]")
+        db.close()
+        return
+    selected_categories, include_all = result
+
+    if missing:
+        contacts = get_missing_birthday_contacts(db, selected_categories, include_all)
+        db.close()
+        if not contacts:
+            console.print("[green]Alle Kontakte haben einen Geburtstag.[/green]")
+            return
+        print_missing_preview(contacts)
+        return
+
+    entries = get_birthday_contacts(db, selected_categories, include_all)
+    db.close()
+
+    if not entries:
+        console.print("[yellow]Keine Kontakte mit Geburtstag gefunden.[/yellow]")
+        return
+
+    # Preview
+    print_birthday_preview(entries)
+
+    # Reminder config
+    reminders = run_reminder_config_tui()
+
+    # Confirm
+    console.print(f"\n  [bold]{len(entries)}[/bold] Kontakte × [bold]{years}[/bold] Jahre "
+                  f"= [bold]{len(entries) * years}[/bold] Events")
+    import readchar
+    console.print("  Exportieren? [green]Enter[/green]=ja  [dim]q[/dim]=abbrechen: ", end="")
+    key = readchar.readchar()
+    console.print(key)
+    if key == "q":
+        console.print("[yellow]Abgebrochen.[/yellow]")
+        return
+
+    # Generate ICS
+    ics_content = generate_ics(entries, years=years, reminders=reminders)
+
+    # Write
+    if output_file:
+        output_path = Path(output_file)
+    else:
+        output_path = DEFAULT_OUTPUT_DIR / "geburtstage.ics"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(ics_content, encoding="utf-8")
+
+    size_kb = len(ics_content.encode("utf-8")) / 1024
+    console.print(f"\n[bold green]{len(entries)} Geburtstage × {years} Jahre "
+                  f"→ {output_path} ({size_kb:.0f} KB)[/bold green]")
+    _log_session_event("birthdays", f"{len(entries)} contacts, {years} years → {output_path}")
+
+
 # ── Split ──────────────────────────────────────────────────────────────────
 
 @cli.command()
@@ -1016,7 +1104,14 @@ def rawparse(ctx, input_file, output_file, db_import, auto_accept, pending):
               help="Resume: continue from saved split state.")
 @click.pass_context
 def split(ctx, input_file, output_dir, no_rest, pending):
-    """Interactively split a VCF file into multiple named target files."""
+    """Interactively split contacts into multiple named target files.
+
+    \b
+    Sources (in priority order):
+      --pending          Resume from saved split state
+      INPUT_FILE         Split contacts from a VCF file
+      (no argument)      Split active real contacts from the database
+    """
     from schnabel.splittui import (
         _start_dialog, load_split_state, run_split_tui,
         save_split_state, write_split_files,
@@ -1052,12 +1147,8 @@ def split(ctx, input_file, output_dir, no_rest, pending):
                                write_rest=not no_rest,
                                initial_assignments=initial_assignments,
                                initial_deleted=initial_deleted)
-    else:
-        # Normal flow: parse VCF + start dialog
-        if not input_file:
-            console.print("[red]INPUT_FILE nötig (oder --pending zum Fortsetzen).[/red]")
-            return
-
+    elif input_file:
+        # From VCF file
         from schnabel.reader import parse_vcf_file
 
         input_path = Path(input_file)
@@ -1080,6 +1171,28 @@ def split(ctx, input_file, output_dir, no_rest, pending):
         result = run_split_tui(contacts, targets, output_path,
                                write_rest=not no_rest)
         input_file = str(input_path)
+
+    else:
+        # From database — pipeline mode (real contacts only)
+        db = get_db(ctx.obj["db_path"])
+        contacts = db.get_contacts_by_category("real")
+        db.close()
+
+        if not contacts:
+            console.print("[red]Keine 'real'-Kontakte in der Datenbank.[/red]")
+            return
+
+        console.print(
+            f"[bold green]{len(contacts)} Kontakte aus Datenbank geladen[/bold green]"
+        )
+
+        targets = _start_dialog()
+        if not targets:
+            console.print("[yellow]Abgebrochen.[/yellow]")
+            return
+
+        result = run_split_tui(contacts, targets, output_path,
+                               write_rest=not no_rest)
 
     # Handle result
     if result.pending:
