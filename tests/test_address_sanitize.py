@@ -1,9 +1,9 @@
 """Tests for address sanitization and normalization."""
 
 from schnabel.sanitize import (
-    _clean_address_value, _address_key, _normalize_address,
-    format_address_display, find_contacts_with_multi_addresses,
-    resolve_multi_addresses,
+    _clean_address_value, _clean_backslash_address, _address_key,
+    _normalize_address, format_address_display,
+    find_contacts_with_multi_addresses, resolve_multi_addresses,
 )
 from schnabel.model import Contact, ContactField
 
@@ -143,6 +143,59 @@ def test_address_different_addresses_kept(tmp_db):
     contact = tmp_db.get_contact(cid)
     addrs = [f.field_value for f in contact.fields if f.field_type == "adr"]
     assert len(addrs) == 2
+
+
+# --- Backslash address cleanup ---
+
+def test_normalize_backslash_space():
+    """Backslash-space in street splits into street + postal code + city."""
+    result = _normalize_address(";;Hafnerstrasse 60\\ 8005 Zürich;;;;")
+    assert "Hafnerstrasse 60" in result
+    assert "8005" in result
+    assert "Zürich" in result
+    # Should be properly structured
+    parts = result.split(";")
+    assert len(parts) == 7
+
+
+def test_normalize_backslash_comma():
+    """Backslash-comma in street splits into proper components."""
+    result = _normalize_address(";;Bruggerstrasse 160\\,5400 Baden;;;;")
+    parts = result.split(";")
+    assert parts[2] == "Bruggerstrasse 160"
+    assert "Baden" in parts[3]
+    assert "5400" in parts[5]
+
+
+def test_normalize_backslash_country():
+    """Country after backslash goes to country component."""
+    result = _normalize_address(";;Beundenfeldstrasse 37\\ 3013 Bern\\ SWITZERLAND;;;;")
+    parts = result.split(";")
+    assert parts[2] == "Beundenfeldstrasse 37"
+    assert parts[6] == "SWITZERLAND"
+
+
+def test_normalize_over_escaped():
+    """Triple-backslash-comma collapses and splits correctly."""
+    result = _normalize_address(";;Fernsichtstrasse 21\\\\\\,8215 Hallau;;;;")
+    parts = result.split(";")
+    assert parts[2] == "Fernsichtstrasse 21"
+    assert "Hallau" in parts[3]
+    assert "8215" in parts[5]
+
+
+def test_normalize_end_vcard_stripped():
+    """Bleeding END:VCARD at end of address is stripped."""
+    result = _normalize_address(";;SKF\\,Postfach\\,3000 Bern;;;;END:VCARD")
+    assert "END:VCARD" not in result
+
+
+def test_clean_backslash_address():
+    """_clean_backslash_address converts backslash separators to commas."""
+    result = _clean_backslash_address("Hafnerstrasse 60\\ 8005 Zürich")
+    assert "\\" not in result
+    assert "Hafnerstrasse 60" in result
+    assert "8005 Zürich" in result
 
 
 # --- Escaped semicolon dedup fix ---

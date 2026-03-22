@@ -599,12 +599,143 @@ def run_tui(db: Database, auto_merged: int = 0):
 
 # -- Address chooser --
 
-def _inline_address_chooser(db: Database, contact_id: int) -> bool:
-    """Prompt user to pick one address when a contact has multiple.
+def _render_address_list(contact_fn: str, addr_fields: list, contact_id: int,
+                         progress: str = ""):
+    """Render the address list for a contact."""
+    from schnabel.sanitize import format_address_display
 
-    Returns True if an address was chosen, False if skipped.
+    header = f"  [bold cyan]{contact_fn}[/bold cyan] (#{contact_id})"
+    if progress:
+        header += f"  {progress}"
+    header += f" — {len(addr_fields)} Adressen"
+    console.print(header)
+
+    for i, (_, val) in enumerate(addr_fields):
+        display = format_address_display(val)
+        console.print(f"  [bold green][{i + 1}][/bold green] {display}")
+
+    keys_str = "/".join(str(i + 1) for i in range(len(addr_fields)))
+    line = Text()
+    line.append(f"  {keys_str}", style="bold green")
+    line.append("=behalten  ")
+    line.append("e", style="bold blue")
+    line.append("=edit  ")
+    line.append("d", style="bold red")
+    line.append("=del  ")
+    line.append("a", style="bold yellow")
+    line.append("=alle  ")
+    line.append("q", style="dim")
+    line.append("=fertig")
+    console.print(line)
+
+
+def _address_edit_loop(db: Database, contact_id: int, progress: str = "") -> str:
+    """Interactive address edit loop for a single contact.
+
+    Returns: 'resolved' if addresses were changed, 'skip' if kept all, 'quit' to stop.
     """
-    from schnabel.sanitize import format_address_display, resolve_multi_addresses
+    from schnabel.sanitize import (
+        format_address_display, resolve_multi_addresses, _address_key,
+    )
+
+    changed = False
+
+    while True:
+        contact = db.get_contact(contact_id)
+        if not contact:
+            return "skip"
+
+        addr_fields = [(f.id, f.field_value) for f in contact.fields if f.field_type == "adr"]
+
+        # If down to 0-1 addresses, done
+        if len(addr_fields) < 2:
+            return "resolved" if changed else "skip"
+
+        # If all addresses now have the same key, done
+        keys = {_address_key(v) for _, v in addr_fields}
+        if len(keys) < 2:
+            return "resolved" if changed else "skip"
+
+        console.print(f"\n{'─' * 50}")
+        _render_address_list(contact.fn, addr_fields, contact_id, progress)
+
+        key = readchar.readchar()
+
+        if key == "q":
+            return "quit"
+
+        if key in ("a", "n"):
+            return "resolved" if changed else "skip"
+
+        # Keep one, archive rest
+        try:
+            choice = int(key) - 1
+            if 0 <= choice < len(addr_fields):
+                archived = resolve_multi_addresses(db, contact_id, choice)
+                display = format_address_display(addr_fields[choice][1])
+                console.print(f"  [green]→ {display}[/green]  ({archived} archiviert)")
+                return "resolved"
+        except (ValueError, IndexError):
+            pass
+
+        # Edit
+        if key == "e":
+            console.print("  Welche # editieren? ", end="")
+            num_key = readchar.readchar()
+            console.print(num_key)
+            try:
+                idx = int(num_key) - 1
+                if 0 <= idx < len(addr_fields):
+                    fid, val = addr_fields[idx]
+                    display = format_address_display(val)
+                    console.print(f"  Aktuell: [bold]{display}[/bold]")
+                    console.print(f"  [dim]Raw: {val}[/dim]")
+                    try:
+                        new_val = input("  Neuer Wert: ").strip()
+                    except (EOFError, KeyboardInterrupt):
+                        continue
+                    if new_val:
+                        db.update_contact_field(fid, new_val)
+                        db.commit()
+                        console.print(f"  [green]Aktualisiert.[/green]")
+                        changed = True
+                else:
+                    console.print("  [red]Ungültige Nummer.[/red]")
+                    time.sleep(0.5)
+            except (ValueError, IndexError):
+                console.print("  [red]Ungültige Nummer.[/red]")
+                time.sleep(0.5)
+            continue
+
+        # Delete
+        if key == "d":
+            console.print("  Welche # löschen? ", end="")
+            num_key = readchar.readchar()
+            console.print(num_key)
+            try:
+                idx = int(num_key) - 1
+                if 0 <= idx < len(addr_fields):
+                    fid, val = addr_fields[idx]
+                    display = format_address_display(val)
+                    db.delete_contact_field(fid)
+                    db.commit()
+                    console.print(f"  [red]{display} gelöscht.[/red]")
+                    changed = True
+                else:
+                    console.print("  [red]Ungültige Nummer.[/red]")
+                    time.sleep(0.5)
+            except (ValueError, IndexError):
+                console.print("  [red]Ungültige Nummer.[/red]")
+                time.sleep(0.5)
+            continue
+
+
+def _inline_address_chooser(db: Database, contact_id: int) -> bool:
+    """Prompt user to manage addresses after a merge.
+
+    Returns True if addresses were changed, False if skipped.
+    """
+    from schnabel.sanitize import _address_key
 
     contact = db.get_contact(contact_id)
     if not contact:
@@ -614,37 +745,12 @@ def _inline_address_chooser(db: Database, contact_id: int) -> bool:
     if len(addr_fields) < 2:
         return False
 
-    # Dedup by key to check if they're actually distinct
-    from schnabel.sanitize import _address_key
-    keys = {_address_key(v): i for i, (_, v) in enumerate(addr_fields)}
+    keys = {_address_key(v) for _, v in addr_fields}
     if len(keys) < 2:
         return False
 
-    console.print(f"\n  [bold yellow]{contact.fn}[/bold yellow] — {len(addr_fields)} Adressen:")
-    for i, (_, val) in enumerate(addr_fields):
-        display = format_address_display(val)
-        console.print(f"  [bold green][{i + 1}][/bold green] {display}")
-
-    keys_str = "/".join(str(i + 1) for i in range(len(addr_fields)))
-    console.print(f"  {keys_str}=behalten  [bold yellow]a[/bold yellow]=alle behalten: ", end="")
-
-    key = readchar.readchar()
-    console.print(key)
-
-    if key == "a":
-        return False
-
-    try:
-        choice = int(key) - 1
-        if 0 <= choice < len(addr_fields):
-            archived = resolve_multi_addresses(db, contact_id, choice)
-            display = format_address_display(addr_fields[choice][1])
-            console.print(f"  [green]→ {display}[/green]  ({archived} archiviert)")
-            return True
-    except (ValueError, IndexError):
-        pass
-
-    return False
+    result = _address_edit_loop(db, contact_id)
+    return result == "resolved"
 
 
 def address_chooser(db: Database, contact_ids: list[int]) -> int:
@@ -652,7 +758,7 @@ def address_chooser(db: Database, contact_ids: list[int]) -> int:
 
     Returns number of contacts where addresses were resolved.
     """
-    from schnabel.sanitize import format_address_display, resolve_multi_addresses, _address_key
+    from schnabel.sanitize import _address_key
 
     resolved = 0
     total = len(contact_ids)
@@ -666,39 +772,16 @@ def address_chooser(db: Database, contact_ids: list[int]) -> int:
         if len(addr_fields) < 2:
             continue
 
-        # Skip if all addresses have same key (dedup will handle them)
         keys = {_address_key(v) for _, v in addr_fields}
         if len(keys) < 2:
             continue
 
-        console.print(f"\n{'─' * 50}")
-        console.print(f"  [bold cyan]{contact.fn}[/bold cyan] (#{cid}) — "
-                      f"{len(addr_fields)} Adressen  [{i + 1}/{total}]")
+        progress = f"[{i + 1}/{total}]"
+        result = _address_edit_loop(db, cid, progress)
 
-        for j, (_, val) in enumerate(addr_fields):
-            display = format_address_display(val)
-            console.print(f"  [bold green][{j + 1}][/bold green] {display}")
-
-        keys_str = "/".join(str(j + 1) for j in range(len(addr_fields)))
-        console.print(f"  {keys_str}=behalten  [bold yellow]a[/bold yellow]=alle  "
-                      f"[dim]q[/dim]=fertig: ", end="")
-
-        key = readchar.readchar()
-        console.print(key)
-
-        if key == "q":
+        if result == "resolved":
+            resolved += 1
+        elif result == "quit":
             break
-        if key == "a":
-            continue
-
-        try:
-            choice = int(key) - 1
-            if 0 <= choice < len(addr_fields):
-                archived = resolve_multi_addresses(db, cid, choice)
-                display = format_address_display(addr_fields[choice][1])
-                console.print(f"  [green]→ {display}[/green]  ({archived} archiviert)")
-                resolved += 1
-        except (ValueError, IndexError):
-            pass
 
     return resolved

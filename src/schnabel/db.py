@@ -169,6 +169,13 @@ class Database:
         rows = self.conn.execute("SELECT file_hash FROM import_sources").fetchall()
         return {row["file_hash"] for row in rows}
 
+    def get_import_sources(self) -> list[dict]:
+        """Get all import sources ordered by import time."""
+        rows = self.conn.execute(
+            "SELECT * FROM import_sources ORDER BY id"
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     # -- Contacts --
 
     def insert_contact(self, contact: Contact) -> int:

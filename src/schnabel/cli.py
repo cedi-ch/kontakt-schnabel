@@ -111,13 +111,42 @@ def cli(ctx, db_path, no_export):
 @click.argument("files", nargs=-1, type=click.Path(exists=True))
 @click.option("--dir", "input_dir", type=click.Path(exists=True),
               help="Import all .vcf files from a directory.")
+@click.option("--list", "list_sources", is_flag=True,
+              help="List all previously imported source files.")
 @click.pass_context
-def import_cmd(ctx, files, input_dir):
+def import_cmd(ctx, files, input_dir, list_sources):
     """Import vCard files into the database."""
+    db = get_db(ctx.obj["db_path"])
+
+    if list_sources:
+        sources = db.get_import_sources()
+        if not sources:
+            console.print("[dim]No files imported yet.[/dim]")
+            db.close()
+            return
+        table = Table(title="[bold cyan]Imported Sources[/bold cyan]",
+                      border_style="cyan")
+        table.add_column("#", style="dim", justify="right")
+        table.add_column("File", style="bold")
+        table.add_column("Contacts", justify="right")
+        table.add_column("Encoding", style="dim")
+        table.add_column("Imported at", style="dim")
+        total = 0
+        for s in sources:
+            name = Path(s["file_path"]).name
+            count = s["contact_count"] or 0
+            total += count
+            table.add_row(
+                str(s["id"]), name, str(count),
+                s["encoding_used"], s["imported_at"],
+            )
+        table.add_row("", "[bold]TOTAL[/bold]", f"[bold]{total}[/bold]", "", "")
+        console.print(table)
+        db.close()
+        return
+
     from schnabel.classify import classify_contact
     from schnabel.reader import file_md5, parse_vcf_file
-
-    db = get_db(ctx.obj["db_path"])
 
     file_paths = [Path(f) for f in files]
     if input_dir:
@@ -133,6 +162,7 @@ def import_cmd(ctx, files, input_dir):
     already_imported = db.get_imported_hashes()
     total_contacts = 0
     total_files = 0
+    imported_names = []
 
     with console.status("[bold cyan]Importing...") as status:
         for fp in file_paths:
@@ -159,6 +189,7 @@ def import_cmd(ctx, files, input_dir):
 
             total_contacts += len(contacts)
             total_files += 1
+            imported_names.append(fp.name)
             console.print(
                 f"  [green]✓[/green] {fp.name}: {len(contacts)} contacts "
                 f"(enc: {encoding})"
@@ -179,6 +210,7 @@ def import_cmd(ctx, files, input_dir):
         "files": total_files, "skipped": skipped,
         "contacts": total_contacts,
         "real": stats["real"], "stubs": stats["stub"], "spam": stats["spam"],
+        "filenames": imported_names,
     })
     db.close()
 
@@ -256,17 +288,34 @@ def normalize(ctx):
 @cli.command()
 @click.option("--addresses", is_flag=True,
               help="Also resolve contacts with multiple addresses interactively.")
+@click.option("--addresses-only", is_flag=True,
+              help="Only resolve multi-address contacts (skip full sanitize).")
 @click.pass_context
-def sanitize(ctx, addresses):
+def sanitize(ctx, addresses, addresses_only):
     """Sanitize contacts: deduplicate phones, emails, addresses within each contact."""
-    from schnabel.sanitize import sanitize_contacts
-
     db = get_db(ctx.obj["db_path"])
     stats = db.get_stats()
     if stats["active"] == 0:
         console.print("[red]No contacts in database. Run 'schnabel import' first.[/red]")
         db.close()
         return
+
+    if addresses_only:
+        from schnabel.sanitize import find_contacts_with_multi_addresses
+        from schnabel.tui import address_chooser
+        multi_addr_ids = find_contacts_with_multi_addresses(db)
+        if multi_addr_ids:
+            console.print(f"[bold yellow]{len(multi_addr_ids)} Kontakte mit mehreren Adressen.[/bold yellow]")
+            resolved_addrs = address_chooser(db, multi_addr_ids)
+            if resolved_addrs:
+                console.print(f"[green]{resolved_addrs} Kontakte aufgeräumt.[/green]")
+        else:
+            console.print("[green]Keine Kontakte mit mehreren Adressen.[/green]")
+        db.close()
+        _auto_export(ctx, "sanitize")
+        return
+
+    from schnabel.sanitize import sanitize_contacts
 
     with console.status("[bold cyan]Sanitizing contacts...") as status:
         def progress(current, total):
@@ -645,6 +694,24 @@ def status(ctx):
         _print_module_report("Pipeline Runs", run_rows)
     else:
         console.print("\n[dim]No pipeline runs recorded yet.[/dim]")
+
+    # Import sources
+    sources = db.get_import_sources()
+    if sources:
+        src_table = Table(title="[bold cyan]Import Sources[/bold cyan]",
+                          border_style="cyan", show_header=True)
+        src_table.add_column("File", style="bold")
+        src_table.add_column("Contacts", justify="right")
+        src_table.add_column("Enc", style="dim")
+        src_table.add_column("Imported", style="dim")
+        total_imported = 0
+        for s in sources:
+            name = Path(s["file_path"]).name
+            count = s["contact_count"] or 0
+            total_imported += count
+            src_table.add_row(name, str(count), s["encoding_used"], s["imported_at"])
+        src_table.add_row("[bold]TOTAL[/bold]", f"[bold]{total_imported}[/bold]", "", "")
+        console.print(src_table)
 
     # Full analyze output
     console.print()

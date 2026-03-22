@@ -13,22 +13,27 @@ from schnabel.model import ContactField
 console = Console()
 
 
+_RESERVED_KEYS = {"b", "n", "q"}
+# Category key sequence: 0-9 then a-z, skipping reserved navigation keys
+_CAT_KEYS = [c for c in
+             [str(i) for i in range(10)] + [chr(o) for o in range(ord("a"), ord("z") + 1)]
+             if c not in _RESERVED_KEYS]
+
+
 def _category_key(idx: int) -> str:
-    """Map index 0-35 to key character: 0-9 then a-z."""
-    if idx < 10:
-        return str(idx)
-    if idx < 36:
-        return chr(ord("a") + idx - 10)
+    """Map index to key character, skipping reserved navigation keys."""
+    if idx < len(_CAT_KEYS):
+        return _CAT_KEYS[idx]
     return "?"
 
 
 def _key_to_index(key: str, max_idx: int) -> int | None:
-    """Map key character to category index. Returns None if invalid."""
-    if key.isdigit():
-        idx = int(key)
-    elif key.isalpha() and key.islower():
-        idx = ord(key) - ord("a") + 10
-    else:
+    """Map key character to category index. Returns None if invalid/reserved."""
+    if key in _RESERVED_KEYS:
+        return None
+    try:
+        idx = _CAT_KEYS.index(key)
+    except ValueError:
         return None
     if 0 <= idx <= max_idx:
         return idx
@@ -79,19 +84,26 @@ def _render_contact(contact, idx: int, total: int, changed: int,
         if f.field_type == "categories":
             continue  # shown on the right
         label = field_labels.get(f.field_type, f.field_type.upper())
-        left_lines.append((label + ":", f.field_value))
+        # Flatten multiline values to single line
+        val = f.field_value.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+        left_lines.append((label + ":", val))
 
     if contact.photos:
         p = contact.photos[0]
         left_lines.append(("PHOTO:", f"[{p.photo_format} {p.width}\u00d7{p.height}]"))
 
-    # Right: category checklist
-    right_lines.append("Kategorien:")
-    right_lines.append("")
-    for i, cat in enumerate(all_categories):
-        key = _category_key(i)
-        checked = "\u2611" if cat in active_cats else "\u2610"
-        right_lines.append(f"[{key}] {checked} {cat}")
+    # Right: category checklist — tuples of (style, text)
+    right_lines.append(("header", "Kategorien:"))
+    right_lines.append(("", ""))
+    if all_categories:
+        for i, cat in enumerate(all_categories):
+            key = _category_key(i)
+            if cat in active_cats:
+                right_lines.append(("active", f"[{key}] ✓ {cat}"))
+            else:
+                right_lines.append(("inactive", f"[{key}]   {cat}"))
+    else:
+        right_lines.append(("inactive", "(keine — mit + anlegen)"))
 
     # Render columns
     col_width = max(console.width // 2 - 2, 30)
@@ -110,11 +122,13 @@ def _render_contact(contact, idx: int, total: int, changed: int,
         line.append("\u2502 ", style="dim")
 
         if row < len(right_lines):
-            rtext = right_lines[row]
-            if row == 0:
+            rstyle, rtext = right_lines[row]
+            if rstyle == "header":
                 line.append(rtext, style="bold")
+            elif rstyle == "active":
+                line.append(rtext, style="bold green")
             else:
-                line.append(rtext)
+                line.append(rtext, style="dim")
 
         console.print(line)
 
@@ -267,8 +281,11 @@ def run_categorize_tui(db: Database, uncategorized_only: bool = False):
                     cat = all_categories[cat_idx]
                     if cat in active_cats:
                         active_cats.discard(cat)
+                        console.print(f"  [red]✗ {cat}[/red]")
                     else:
                         active_cats.add(cat)
+                        console.print(f"  [green]✓ {cat}[/green]")
+                    time.sleep(0.3)
                 # stay in inner loop -> re-render
 
     # Done — all contacts reviewed

@@ -38,13 +38,37 @@ def _clean_address_value(addr: str) -> str:
 
     Preserves semicolon structure for 7-component addresses.
     """
+    # Strip bleeding END:VCARD artifacts
+    result = re.sub(r"END:VCARD\s*$", "", addr)
     # Unescape vCard escape sequences that survived into stored values
-    result = addr.replace("\\;", ";").replace("\\n", " ").replace("\\N", " ")
+    result = result.replace("\\;", ";").replace("\\n", " ").replace("\\N", " ")
     # Replace actual newlines/CRs
     result = result.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
     # Collapse multiple spaces (but not semicolons — those are structural)
     result = re.sub(r"\s{2,}", " ", result)
     return result.strip()
+
+
+def _clean_backslash_address(addr: str) -> str:
+    """Fix backslash-separated addresses by splitting into proper components.
+
+    Handles: backslash-space, backslash-comma, over-escaped sequences.
+    Called by _normalize_address on the street component when it contains
+    backslashes, preserving the 7-component structure.
+    """
+    # Collapse over-escaped sequences: \\\, or \\\\\\, → single comma
+    result = re.sub(r"(?:\\){2,},", ",", addr)
+    # Replace backslash-comma with comma (normalized separator)
+    result = result.replace("\\,", ",")
+    # Replace backslash-space or backslash-before-digit with comma
+    result = re.sub(r"\\\s+", ", ", result)
+    result = re.sub(r"\\(?=\d)", ", ", result)
+    # Strip any remaining stray backslashes
+    result = result.replace("\\", " ")
+    # Clean up whitespace
+    result = re.sub(r"\s{2,}", " ", result)
+    result = re.sub(r"\s*,\s*", ", ", result)
+    return result.strip(", ")
 
 
 def _address_key(addr: str) -> str:
@@ -57,8 +81,43 @@ def _address_key(addr: str) -> str:
     return " ".join(tokens)
 
 
+def _split_street_to_components(street: str) -> tuple[str, str, str, str]:
+    """Try to extract (street, city, code, country) from a comma-separated street string.
+
+    Handles patterns like:
+      'Hafnerstrasse 60, 8005 Zürich' → ('Hafnerstrasse 60', 'Zürich', '8005', '')
+      'Brombergstr. 7A, D-79102 Freiburg' → ('Brombergstr. 7A', 'Freiburg', 'D-79102', '')
+      'Strasse 1, 8000 Zürich, DEUTSCHLAND' → ('Strasse 1', 'Zürich', '8000', 'DEUTSCHLAND')
+    """
+    parts = [p.strip() for p in street.split(",") if p.strip()]
+    if len(parts) < 2:
+        return (street, "", "", "")
+
+    street_part = parts[0]
+    city = ""
+    code = ""
+    country = ""
+
+    for p in parts[1:]:
+        # Match postal code + city: "8005 Zürich" or "D-79102 Freiburg im Breisgau"
+        m = re.match(r"^([A-Z]{0,2}-?\d{4,6})\s+(.+)$", p)
+        if m and not code:
+            code = m.group(1)
+            city = m.group(2)
+        elif re.match(r"^[A-ZÄÖÜ]{2,}$", p.upper()) and len(p) <= 20 and not country:
+            # Likely a country: DEUTSCHLAND, SWITZERLAND, CH, etc.
+            country = p
+        elif not city:
+            city = p
+        else:
+            # Extra parts — append to city
+            city += ", " + p
+
+    return (street_part, city, code, country)
+
+
 def _normalize_address(addr: str) -> str:
-    """Normalize address: clean escape artifacts, fix separators."""
+    """Normalize address: clean escape artifacts, fix separators, structure components."""
     result = _clean_address_value(addr)
 
     # If it's semicolon-separated (structured format), clean each component
@@ -67,6 +126,20 @@ def _normalize_address(addr: str) -> str:
         cleaned = [p.strip() for p in parts]
         while len(cleaned) < 7:
             cleaned.append("")
+
+        # Fix backslash-laden street component: split into proper fields
+        street = cleaned[2]
+        if "\\" in street:
+            street_cleaned = _clean_backslash_address(street)
+            s_street, s_city, s_code, s_country = _split_street_to_components(street_cleaned)
+            cleaned[2] = s_street
+            if s_city and not cleaned[3]:
+                cleaned[3] = s_city
+            if s_code and not cleaned[5]:
+                cleaned[5] = s_code
+            if s_country and not cleaned[6]:
+                cleaned[6] = s_country
+
         return ";".join(cleaned[:7])
 
     # Free-form address: strip leading commas, normalize separators
