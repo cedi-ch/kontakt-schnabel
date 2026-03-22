@@ -156,8 +156,15 @@ def run_category_selection_tui(db: Database) -> tuple[set[str], bool] | None:
     all_categories = db.get_all_category_values()
     breakdown = db.get_category_breakdown()
 
-    # Count contacts without categories that have BDAY
+    # Pre-compute BDAY counts per category
     all_contacts = db.get_contacts_by_category("real")
+    bday_by_cat: dict[str, int] = {}
+    for c in all_contacts:
+        if not c.bdays:
+            continue
+        for cat in c.categories:
+            bday_by_cat[cat] = bday_by_cat.get(cat, 0) + 1
+
     uncategorized_with_bday = sum(
         1 for c in all_contacts
         if c.bdays and not c.categories
@@ -176,29 +183,38 @@ def run_category_selection_tui(db: Database) -> tuple[set[str], bool] | None:
         console.print(header)
         console.print("─" * console.width)
 
-        # Select all option
-        if select_all:
-            console.print(f"  [bold green][*] ✓ ALLE ({total_with_bday} mit Geburtstag)[/bold green]")
-        else:
-            console.print(f"  [dim][*]   ALLE ({total_with_bday} mit Geburtstag)[/dim]")
+        # Column header
+        console.print(f"  {'':3}   {'Kategorie':<25} {'Kontakte':>8}  {'BDAYs':>6}")
+        console.print("─" * console.width)
 
-        console.print()
+        # Select all option
+        line = Text()
+        if select_all:
+            line.append(f"  [*] ✓ {'ALLE':<25} {'':>8}  {total_with_bday:>6}", style="bold green")
+        else:
+            line.append(f"  [*]   {'ALLE':<25} {'':>8}  {total_with_bday:>6}", style="dim")
+        console.print(line)
 
         # Category list
         for i, cat in enumerate(all_categories):
             key = _category_key(i)
             count = breakdown.get(cat, 0)
+            bdays = bday_by_cat.get(cat, 0)
+            line = Text()
             if select_all or cat in selected:
-                console.print(f"  [bold green][{key}] ✓ {cat} ({count})[/bold green]")
+                line.append(f"  [{key}] ✓ {cat:<25} {count:>8}  {bdays:>6}", style="bold green")
             else:
-                console.print(f"  [dim][{key}]   {cat} ({count})[/dim]")
+                line.append(f"  [{key}]   {cat:<25} {count:>8}  {bdays:>6}", style="dim")
+            console.print(line)
 
         # Uncategorized
         if uncategorized_with_bday > 0:
+            line = Text()
             if select_all:
-                console.print(f"\n  [bold green]  + {uncategorized_with_bday} ohne Kategorie[/bold green]")
+                line.append(f"\n        {'(ohne Kategorie)':<25} {'':>8}  {uncategorized_with_bday:>6}", style="bold green")
             else:
-                console.print(f"\n  [dim]  + {uncategorized_with_bday} ohne Kategorie (nur mit *)[/dim]")
+                line.append(f"\n        {'(ohne Kategorie, nur *)':<25} {'':>8}  {uncategorized_with_bday:>6}", style="dim")
+            console.print(line)
 
         console.print("\n" + "─" * console.width)
         line = Text()

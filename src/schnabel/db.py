@@ -728,6 +728,29 @@ class Database:
         self.conn.commit()
         return cur.rowcount
 
+    def search_contacts(self, query: str) -> list[Contact]:
+        """Search active contacts by FN, email, phone, or org (case-insensitive)."""
+        pattern = f"%{query}%"
+        rows = self.conn.execute(
+            """SELECT DISTINCT c.id FROM contacts c
+               LEFT JOIN contact_fields cf ON cf.contact_id = c.id
+               WHERE c.is_active = 1
+               AND (c.fn LIKE ? COLLATE NOCASE
+                    OR c.family_name LIKE ? COLLATE NOCASE
+                    OR c.given_name LIKE ? COLLATE NOCASE
+                    OR (cf.field_type IN ('email', 'tel', 'org', 'nickname')
+                        AND cf.field_value LIKE ? COLLATE NOCASE))
+               ORDER BY c.fn COLLATE NOCASE
+               LIMIT 50""",
+            (pattern, pattern, pattern, pattern),
+        ).fetchall()
+        contacts = []
+        for row in rows:
+            c = self.get_contact(row["id"])
+            if c:
+                contacts.append(c)
+        return contacts
+
     def get_contacts_by_category(self, category: str) -> list[Contact]:
         rows = self.conn.execute(
             "SELECT id FROM contacts WHERE category = ? AND is_active = 1 ORDER BY fn",

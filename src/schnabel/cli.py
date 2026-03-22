@@ -102,7 +102,7 @@ def cli(ctx, db_path, no_export):
       9. export      Export clean vCard 3.0 files
 
     \b
-    Utilities: birthdays, reclassify, compare, rawparse, pdf, photos, status, stats
+    Utilities: search/edit, birthdays, reclassify, compare, rawparse, pdf, photos, status, stats
     """
     ctx.ensure_object(dict)
     ctx.obj["db_path"] = Path(db_path)
@@ -1008,6 +1008,42 @@ def rawparse(ctx, input_file, output_file, db_import, auto_accept, pending):
         _auto_export(ctx, "rawparse")
 
 
+# ── Search / Edit ──────────────────────────────────────────────────────────
+
+@cli.command()
+@click.pass_context
+def search(ctx):
+    """Search and edit individual contacts interactively."""
+    from schnabel.searchtui import run_search_tui
+
+    db = get_db(ctx.obj["db_path"])
+    stats = db.get_stats()
+    if stats["active"] == 0:
+        console.print("[red]Keine Kontakte in der Datenbank.[/red]")
+        db.close()
+        return
+
+    run_search_tui(db)
+    db.close()
+
+
+@cli.command()
+@click.pass_context
+def edit(ctx):
+    """Search and edit individual contacts (alias for 'search')."""
+    from schnabel.searchtui import run_search_tui
+
+    db = get_db(ctx.obj["db_path"])
+    stats = db.get_stats()
+    if stats["active"] == 0:
+        console.print("[red]Keine Kontakte in der Datenbank.[/red]")
+        db.close()
+        return
+
+    run_search_tui(db)
+    db.close()
+
+
 # ── Birthdays ──────────────────────────────────────────────────────────────
 
 @cli.command()
@@ -1075,14 +1111,22 @@ def birthdays(ctx, output_file, missing, years):
         console.print("[yellow]Abgebrochen.[/yellow]")
         return
 
+    # Filename
+    if not output_file:
+        console.print("  Dateiname (ohne .ics, Enter=geburtstage): ", end="")
+        try:
+            name_input = input().strip()
+        except (EOFError, KeyboardInterrupt):
+            name_input = ""
+        from datetime import datetime
+        ts = datetime.now().strftime("%Y-%m-%d_%H%M")
+        base_name = name_input or "geburtstage"
+        output_file = str(DEFAULT_OUTPUT_DIR / f"{ts}_{base_name}.ics")
+
     # Generate ICS
     ics_content = generate_ics(entries, years=years, reminders=reminders)
 
-    # Write
-    if output_file:
-        output_path = Path(output_file)
-    else:
-        output_path = DEFAULT_OUTPUT_DIR / "geburtstage.ics"
+    output_path = Path(output_file)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(ics_content, encoding="utf-8")
 

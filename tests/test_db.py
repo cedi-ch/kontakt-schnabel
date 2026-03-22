@@ -138,6 +138,39 @@ def test_delete_category_from_all(tmp_db):
     assert cat_values == ["Friends"]
 
 
+def test_search_contacts(tmp_db):
+    """search_contacts finds by name, email, phone."""
+    c1 = Contact(fn="Hans Müller", family_name="Müller", given_name="Hans", category="real")
+    c1.fields.append(ContactField("email", "hans@test.com"))
+    tmp_db.insert_contact(c1)
+
+    c2 = Contact(fn="Anna Schmidt", family_name="Schmidt", given_name="Anna", category="real")
+    c2.fields.append(ContactField("tel", "+41791234567"))
+    tmp_db.insert_contact(c2)
+
+    c3 = Contact(fn="Peter Weber", family_name="Weber", given_name="Peter", category="real")
+    tmp_db.insert_contact(c3)
+    tmp_db.commit()
+
+    # Search by name
+    results = tmp_db.search_contacts("müller")
+    assert len(results) == 1
+    assert results[0].fn == "Hans Müller"
+
+    # Search by email
+    results = tmp_db.search_contacts("hans@test")
+    assert len(results) == 1
+
+    # Search by phone
+    results = tmp_db.search_contacts("1234567")
+    assert len(results) == 1
+    assert results[0].fn == "Anna Schmidt"
+
+    # No match
+    results = tmp_db.search_contacts("zzzzz")
+    assert len(results) == 0
+
+
 def test_category_breakdown(tmp_db):
     """get_category_breakdown counts per CATEGORIES value."""
     c1 = Contact(fn="A", category="real")
